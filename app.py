@@ -6,117 +6,116 @@ import plotly.express as px
 st.set_page_config(page_title="Dashboard Master: Cost vs Revenue", page_icon="💰", layout="wide")
 
 # ==========================================
-# ⚙️ CONFIGURACIÓN DE DATOS (YA ACTUALIZADA)
+# ⚙️ CONFIGURACIÓN DE DATOS
 # ==========================================
 SHEET_ID = "1WuBv1esTxZAfC07BPwWzjsz5TZqfUHa6MOzNIAEOMew"
+GID_ANDROID = "368085162"    # Datos por AOS/dia
+GID_IOS = "1225911759"       # Datos por IOS/dia
 
-# GIDs extraídos de tus enlaces:
-GID_ANDROID = "368085162"    # Pestaña: Datos por AOS/dia
-GID_IOS = "1225911759"       # Pestaña: Datos por IOS/dia
-# ==========================================
-
-# Construir URLs de exportación CSV
 def get_url(gid):
     return f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid={gid}"
 
-# --- FUNCIÓN DE CARGA Y LIMPIEZA ---
+# --- FUNCIÓN DE LIMPIEZA INTELIGENTE ---
+def find_column(columns, candidates):
+    """Busca la primera coincidencia de una lista de candidatos en las columnas."""
+    # Normalizamos columnas del excel a minúsculas
+    cols_lower = [c.lower() for c in columns]
+    
+    for candidate in candidates:
+        if candidate in cols_lower:
+            # Devolvemos el nombre real de la columna (con mayúsculas originales)
+            return columns[cols_lower.index(candidate)]
+    return None
+
 @st.cache_data(ttl=600)
 def load_data():
-    urls = {
-        'Android': get_url(GID_ANDROID),
-        'iOS': get_url(GID_IOS)
-    }
-    
+    urls = {'Android': get_url(GID_ANDROID), 'iOS': get_url(GID_IOS)}
     dfs = []
     
     for os_name, url in urls.items():
         try:
-            # Leer CSV
+            # 1. Leer CSV
             df = pd.read_csv(url)
             
-            # Limpiar nombres de columnas (quitar espacios extra y comillas)
+            # 2. Limpieza básica de cabeceras
             df.columns = df.columns.str.strip().str.replace('"', '')
             
-            # --- NORMALIZAR NOMBRES DE COLUMNAS ---
-            # Esto busca tus columnas aunque cambies mayúsculas/minúsculas
-            cols_map = {col: col.lower() for col in df.columns}
+            # 3. MAPEO SELECTIVO (Evita duplicados)
+            # Buscamos la columna exacta para cada métrica
+            col_mapping = {}
             
-            for col, lower_col in cols_map.items():
-                if lower_col in ['date', 'day', 'fecha', 'v', 'día']:
-                    df.rename(columns={col: 'Date'}, inplace=True)
-                elif lower_col in ['cost', 'coste', 'spend', 'costo']:
-                    df.rename(columns={col: 'Cost'}, inplace=True)
-                elif lower_col in ['revenue', 'revenue total', 'ingresos', 'gain']: # Ojo, Gain suele ser beneficio, Revenue es ingreso bruto. Ajusta si tu columna se llama diferente.
-                    df.rename(columns={col: 'Revenue'}, inplace=True)
-                elif lower_col in ['country', 'pais', 'geo', 'geo/os']:
-                    df.rename(columns={col: 'Country'}, inplace=True)
+            # Prioridad para FECHA: 'day', 'date', 'fecha', 'v'
+            real_date_col = find_column(df.columns, ['day', 'date', 'fecha', 'v', 'time'])
+            if real_date_col: col_mapping[real_date_col] = 'Date'
+            
+            # Prioridad para PAÍS: 'country', 'geo', 'geo/os', 'pais'
+            real_country_col = find_column(df.columns, ['country', 'geo', 'geo/os', 'pais'])
+            if real_country_col: col_mapping[real_country_col] = 'Country'
+            
+            # Prioridad para COSTE: 'cost', 'coste', 'spend'
+            real_cost_col = find_column(df.columns, ['cost', 'coste', 'spend', 'total cost'])
+            if real_cost_col: col_mapping[real_cost_col] = 'Cost'
+            
+            # Prioridad para REVENUE: 'revenue total' > 'revenue' > 'gain'
+            # (Aquí estaba el fallo: ahora prioriza 'Revenue Total' y ignora 'Gain' si ya encontró el otro)
+            real_rev_col = find_column(df.columns, ['revenue total', 'revenue', 'ingresos', 'gain'])
+            if real_rev_col: col_mapping[real_rev_col] = 'Revenue'
 
-            # Validar que existan las columnas críticas
-            required_cols = ['Date', 'Cost', 'Revenue', 'Country']
-            # Nota: Si tu Excel no tiene columna 'Revenue', el código fallará. 
-            # Si 'Gain' es tu única columna de beneficio, avísame para cambiarlo.
+            # 4. Renombrar solo las encontradas
+            df.rename(columns=col_mapping, inplace=True)
             
-            missing = [c for c in required_cols if c not in df.columns]
+            # 5. ELIMINAR DUPLICADOS (El salvavidas 🚑)
+            # Si por error hay dos columnas 'Date', nos quedamos solo con la primera
+            df = df.loc[:, ~df.columns.duplicated()]
+
+            # 6. Validar columnas críticas
+            required = ['Date', 'Cost', 'Revenue', 'Country']
+            missing = [c for c in required if c not in df.columns]
+            
             if missing:
-                # Si falta Revenue pero hay Gain, intentamos usar Gain
-                if 'Revenue' in missing and 'Gain' in df.columns:
-                     df.rename(columns={'Gain': 'Revenue'}, inplace=True)
-                else:
-                    st.warning(f"⚠️ En la pestaña {os_name} faltan columnas: {missing}. Columnas detectadas: {list(df.columns)}")
-                    continue
+                st.warning(f"⚠️ Pestaña {os_name}: Faltan columnas {missing}. Se encontraron: {list(df.columns)}")
+                continue # Saltamos esta pestaña si está rota
 
-            # Limpiar datos numéricos ($ y ,)
+            # 7. Limpiar números ($ y ,)
             for col in ['Cost', 'Revenue']:
                 if df[col].dtype == 'object':
                     df[col] = df[col].astype(str).str.replace('$', '').str.replace(',', '')
                     df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
             
-            # Convertir fecha
+            # 8. Convertir fecha
             df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
-            
-            # Añadir etiqueta de Sistema Operativo
             df['OS'] = os_name
             
-            dfs.append(df)
+            # Seleccionamos solo las columnas que nos interesan para limpiar el DF final
+            final_cols = ['Date', 'Country', 'Cost', 'Revenue', 'OS']
+            dfs.append(df[final_cols])
             
         except Exception as e:
-            st.error(f"Error cargando pestaña {os_name}: {e}")
+            st.error(f"Error procesando {os_name}: {e}")
     
     if dfs:
         return pd.concat(dfs, ignore_index=True)
     return None
 
-# --- CARGAR DATOS ---
+# --- CARGAR ---
 df = load_data()
 
 # --- INTERFAZ ---
 st.title("📊 Dashboard Financiero: Coste vs Revenue")
 
 if df is not None and not df.empty:
-    # ---------------------------
-    # 1. SIDEBAR Y FILTROS
-    # ---------------------------
+    # FILTROS
     st.sidebar.header("Filtros")
     
-    # Filtro Fecha
-    min_date = df['Date'].min()
-    max_date = df['Date'].max()
+    min_date, max_date = df['Date'].min(), df['Date'].max()
+    date_range = st.sidebar.date_input("Fechas", [min_date, max_date]) if not pd.isnull(min_date) else [None, None]
     
-    if pd.isnull(min_date) or pd.isnull(max_date):
-        st.warning("No se detectaron fechas válidas.")
-        date_range = [pd.Timestamp.today(), pd.Timestamp.today()]
-    else:
-        date_range = st.sidebar.date_input("Rango de Fechas", [min_date, max_date])
-    
-    # Filtro OS
-    selected_os = st.sidebar.multiselect("Sistema Operativo", df['OS'].unique(), default=df['OS'].unique())
-    
-    # Filtro País
+    selected_os = st.sidebar.multiselect("OS", df['OS'].unique(), default=df['OS'].unique())
     all_countries = sorted(df['Country'].unique().astype(str))
     selected_countries = st.sidebar.multiselect("Países", all_countries, default=all_countries)
     
-    # APLICAR FILTROS
-    if len(date_range) == 2:
+    # FILTRADO
+    if len(date_range) == 2 and date_range[0]:
         mask = (
             (df['Date'] >= pd.to_datetime(date_range[0])) & 
             (df['Date'] <= pd.to_datetime(date_range[1])) &
@@ -127,89 +126,36 @@ if df is not None and not df.empty:
     else:
         df_filtered = df
 
-    # ---------------------------
-    # 2. KPIS GLOBALES
-    # ---------------------------
-    total_cost = df_filtered['Cost'].sum()
-    total_rev = df_filtered['Revenue'].sum()
-    total_profit = total_rev - total_cost # Asumiendo que Revenue es bruto. Si es neto, ajusta.
-    roi = (total_profit / total_cost * 100) if total_cost > 0 else 0
+    # KPIS
+    cost = df_filtered['Cost'].sum()
+    rev = df_filtered['Revenue'].sum()
+    profit = rev - cost
+    roi = (profit / cost * 100) if cost > 0 else 0
     
     k1, k2, k3, k4 = st.columns(4)
-    k1.metric("💸 Coste Total", f"${total_cost:,.2f}")
-    k2.metric("💰 Revenue Total", f"${total_rev:,.2f}")
-    k3.metric("📈 Beneficio", f"${total_profit:,.2f}", delta_color="normal")
-    k4.metric("🚀 ROI", f"{roi:.2f}%")
+    k1.metric("Coste", f"${cost:,.2f}")
+    k2.metric("Revenue", f"${rev:,.2f}")
+    k3.metric("Beneficio", f"${profit:,.2f}")
+    k4.metric("ROI", f"{roi:.2f}%")
     
     st.divider()
 
-    # ---------------------------
-    # 3. GRÁFICAS SOLICITADAS
-    # ---------------------------
-    
-    # A) EVOLUCIÓN DIARIA (TOTAL COSTE Y REVENUE)
-    st.subheader("📅 1. Evolución Diaria (Total)")
-    
-    # Agrupar por Día (Sumando ambos OS)
-    df_daily_total = df_filtered.groupby('Date')[['Cost', 'Revenue']].sum().reset_index()
-    
-    # Transformar para gráfico
-    df_daily_melt = df_daily_total.melt(id_vars='Date', value_vars=['Cost', 'Revenue'], var_name='Metric', value_name='Amount')
-    
-    fig_daily = px.line(
-        df_daily_melt, 
-        x='Date', 
-        y='Amount', 
-        color='Metric', 
-        title="Coste vs Revenue Diario (Global)",
-        color_discrete_map={'Cost': '#EF553B', 'Revenue': '#00CC96'},
-        markers=True
-    )
-    st.plotly_chart(fig_daily, use_container_width=True)
+    # GRÁFICA 1: EVOLUCIÓN
+    st.subheader("📅 Evolución Diaria (Total)")
+    daily = df_filtered.groupby('Date')[['Cost', 'Revenue']].sum().reset_index().melt(id_vars='Date')
+    st.plotly_chart(px.line(daily, x='Date', y='value', color='variable', 
+                            color_discrete_map={'Cost':'#EF553B', 'Revenue':'#00CC96'}), use_container_width=True)
 
-    # B) DETALLE POR PAÍS Y DÍA (Separado por OS)
-    st.subheader("🌍 2. Rendimiento por País y Día (Separado por OS)")
-    
-    # Esta gráfica puede ser muy densa si hay muchos días.
-    # Hacemos un gráfico de barras apiladas o agrupadas.
-    
-    # Opción: Elegir una métrica para visualizar
-    metric_to_plot = st.radio("Selecciona métrica para el gráfico detallado:", ["Revenue", "Cost"], horizontal=True)
-    
-    color_map = {'Android': '#3DDC84', 'iOS': '#000000'} # Colores típicos
-    
-    fig_country_day = px.bar(
-        df_filtered,
-        x='Date',
-        y=metric_to_plot,
-        color='OS',
-        facet_col='Country', # Una gráfica pequeña por país
-        facet_col_wrap=3,    # Máximo 3 gráficas por fila
-        title=f"Evolución de {metric_to_plot} por País y Sistema Operativo",
-        color_discrete_map=color_map,
-        height=800 # Hacemos la gráfica más alta para que quepan
-    )
-    # Ajustar ejes para que se vean bien las fechas
-    fig_country_day.update_xaxes(matches=None) 
-    st.plotly_chart(fig_country_day, use_container_width=True)
+    # GRÁFICA 2: PAÍS Y OS
+    st.subheader("🌍 Rendimiento por País y OS")
+    # Agrupamos para simplificar
+    country_os = df_filtered.groupby(['Country', 'OS'])[['Cost', 'Revenue']].sum().reset_index().melt(id_vars=['Country', 'OS'])
+    st.plotly_chart(px.bar(country_os, x='Country', y='value', color='variable', facet_col='OS', barmode='group',
+                           color_discrete_map={'Cost':'#EF553B', 'Revenue':'#00CC96'}), use_container_width=True)
 
-    # C) TABLA RESUMEN POR PAÍS
-    st.subheader("📋 Resumen por País")
-    df_summary = df_filtered.groupby(['Country', 'OS'])[['Cost', 'Revenue']].sum().reset_index()
-    df_summary['ROI %'] = ((df_summary['Revenue'] - df_summary['Cost']) / df_summary['Cost'] * 100).fillna(0)
-    
-    # Formatear columnas
-    st.dataframe(
-        df_summary.style.format({
-            "Cost": "${:,.2f}", 
-            "Revenue": "${:,.2f}", 
-            "ROI %": "{:.1f}%"
-        }), 
-        use_container_width=True
-    )
-
-    with st.expander("📂 Ver Datos Brutos Completos"):
+    # TABLA
+    with st.expander("Ver Datos"):
         st.dataframe(df_filtered)
 
 else:
-    st.info("👋 Conectando... Si esto tarda, revisa que el Excel esté compartido como 'Cualquiera con el enlace'.")
+    st.info("Cargando datos... Si ves esto mucho tiempo, revisa los permisos del Sheet.")

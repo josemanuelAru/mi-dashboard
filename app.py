@@ -1,118 +1,127 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import time
 
 # --- CONFIGURACIÓN DE LA PÁGINA ---
-st.set_page_config(
-    page_title="Dashboard de Tráfico Diario",
-    page_icon="📊",
-    layout="wide"
-)
+st.set_page_config(page_title="Dashboard Adport/Msales", page_icon="📈", layout="wide")
 
-# --- TU ENLACE MÁGICO ---
-# Aquí pegas el enlace CSV de tu Google Sheet o el enlace RAW de GitHub/Dropbox
-# Ejemplo (este es falso, pon el tuyo):
-DATA_URL = "https://docs.google.com/spreadsheets/d/e/TuIDdeGoogleSheet/pub?output=csv"
+# --- TU ENLACE ORIGINAL ---
+SHEET_URL = "https://docs.google.com/spreadsheets/d/1WuBv1esTxZAfC07BPwWzjsz5TZqfUHa6MOzNIAEOMew/edit?gid=368085162#gid=368085162"
 
-# --- FUNCIÓN PARA CARGAR DATOS ---
-# El 'ttl=600' significa que guarda los datos en memoria 10 minutos para ir rápido.
-# Pasado ese tiempo, vuelve a mirar el Excel para ver si hay cambios.
-@st.cache_data(ttl=600)
-def load_data(url):
+# --- FUNCIÓN PARA CONVERTIR ENLACE DE EDITAR A CSV ---
+def get_csv_url(url):
+    # Extraemos el ID de la hoja
+    sheet_id = url.split('/d/')[1].split('/')[0]
+    # Extraemos el GID (el ID de la pestaña específica)
+    gid = '0'
+    if 'gid=' in url:
+        gid = url.split('gid=')[1].split('#')[0]
+    
+    return f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
+
+# --- FUNCIÓN DE CARGA DE DATOS ---
+@st.cache_data(ttl=600) # Se actualiza cada 10 minutos
+def load_data(original_url):
+    csv_url = get_csv_url(original_url)
     try:
-        # Leemos el CSV
-        df = pd.read_csv(url)
+        df = pd.read_csv(csv_url)
         
-        # LIMPIEZA: Quitamos comillas y espacios de los nombres de columnas
+        # Limpiar nombres de columnas (quitar espacios y comillas)
         df.columns = df.columns.str.strip().str.replace('"', '')
+
+        # --- DETECCIÓN INTELIGENTE DE COLUMNAS ---
+        # Buscamos la columna de fecha
+        date_col = next((col for col in df.columns if col.lower() in ['date', 'day', 'v', 'fecha']), None)
+        # Buscamos la columna de coste
+        cost_col = next((col for col in df.columns if col.lower() in ['cost', 'coste', 'spend']), None)
+        # Buscamos la columna de impresiones/visitas
+        imp_col = next((col for col in df.columns if col.lower() in ['impressions', 'impresiones', 'visits', 'received visits zp']), None)
+        # Buscamos la columna de país
+        country_col = next((col for col in df.columns if col.lower() in ['country', 'pais', 'geo', 'geo/os']), None)
         
-        # LIMPIEZA: Aseguramos que los números sean números
-        # A veces el CSV trae simbolos de moneda o comas extrañas
-        cols_to_clean = ['Cost', 'Impressions']
-        for col in cols_to_clean:
-            if col in df.columns and df[col].dtype == 'object':
-                df[col] = df[col].astype(str).str.replace('$', '').str.replace(',', '')
-                df[col] = pd.to_numeric(df[col], errors='coerce')
+        # Procesar FECHA
+        if date_col:
+            df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
+            df = df.sort_values(by=date_col)
+
+        # Procesar NÚMEROS (Quitar $ y ,)
+        for col in df.columns:
+            if df[col].dtype == 'object':
+                try:
+                    # Intenta limpiar si parece dinero
+                    if df[col].astype(str).str.contains('\$').any():
+                        df[col] = df[col].astype(str).str.replace('$', '').str.replace(',', '')
+                        df[col] = pd.to_numeric(df[col], errors='coerce')
+                except:
+                    pass
         
-        return df
+        return df, date_col, cost_col, imp_col, country_col
+
     except Exception as e:
-        return None
+        st.error(f"Error al cargar: {e}")
+        return None, None, None, None, None
 
-# --- INTERFAZ PRINCIPAL ---
-st.title("🚀 Dashboard de Rendimiento Diario")
-st.markdown(f"**Fuente de datos:** {DATA_URL}")
+# --- CARGAMOS LOS DATOS ---
+df, date_col, cost_col, imp_col, country_col = load_data(SHEET_URL)
 
-# Botón para forzar actualización manual
-if st.button('🔄 Actualizar Datos Ahora'):
-    st.cache_data.clear()
-    st.rerun()
-
-# Cargamos los datos
-df = load_data(DATA_URL)
+# --- INTERFAZ DE USUARIO ---
+st.title("📊 Dashboard de Control Diario")
 
 if df is not None:
-    # --- FILTROS LATERALES ---
+    # FILTROS (SIDEBAR)
     st.sidebar.header("Filtros")
     
-    # Filtro por País (si la columna existe)
-    if 'Country' in df.columns:
-        countries = st.sidebar.multiselect(
-            "Selecciona Países:",
-            options=df['Country'].unique(),
-            default=df['Country'].unique()
+    # Filtro de País
+    if country_col:
+        selected_countries = st.sidebar.multiselect(
+            "Filtrar por País:",
+            options=df[country_col].unique(),
+            default=df[country_col].unique()
         )
-        df_filtered = df[df['Country'].isin(countries)]
+        df_filtered = df[df[country_col].isin(selected_countries)]
     else:
         df_filtered = df
 
-    # --- KPIs (INDICADORES CLAVE) ---
-    total_cost = df_filtered['Cost'].sum()
-    total_imps = df_filtered['Impressions'].sum()
-    # Calculamos CPM Promedio (Coste / (Impresiones/1000))
-    avg_cpm = (total_cost / (total_imps / 1000)) if total_imps > 0 else 0
-
-    col1, col2, col3 = st.columns(3)
-    col1.metric("💰 Gasto Total", f"${total_cost:,.2f}")
-    col2.metric("👁️ Impresiones Totales", f"{total_imps:,.0f}")
-    col3.metric("📉 CPM Promedio", f"${avg_cpm:.2f}")
+    # KPIS PRINCIPALES
+    total_cost = df_filtered[cost_col].sum() if cost_col else 0
+    total_imps = df_filtered[imp_col].sum() if imp_col else 0
+    
+    # Mostramos KPIs
+    kpi1, kpi2, kpi3 = st.columns(3)
+    kpi1.metric("💰 Gasto Total", f"${total_cost:,.2f}")
+    kpi2.metric("👁️ Tráfico Total", f"{total_imps:,.0f}")
+    
+    # Intentamos calcular CPM si tenemos los datos
+    if total_imps > 0 and total_cost > 0:
+        cpm = (total_cost / total_imps) * 1000
+        kpi3.metric("📉 CPM Promedio", f"${cpm:.2f}")
 
     st.markdown("---")
 
-    # --- GRÁFICOS ---
-    col_chart1, col_chart2 = st.columns(2)
+    # GRÁFICOS
+    col1, col2 = st.columns(2)
 
-    with col_chart1:
-        st.subheader("Gasto por País")
-        fig_cost = px.bar(
-            df_filtered, 
-            x='Country', 
-            y='Cost',
-            text='Cost',
-            color='Cost',
-            color_continuous_scale='Reds',
-            title="Inversión ($) desglosada"
-        )
-        fig_cost.update_traces(texttemplate='$%{text:.2f}', textposition='outside')
-        st.plotly_chart(fig_cost, use_container_width=True)
+    # Gráfico 1: Evolución Temporal
+    with col1:
+        if date_col and cost_col:
+            st.subheader("📈 Evolución del Gasto Diario")
+            fig_line = px.line(df_filtered, x=date_col, y=cost_col, title="Gasto por Día")
+            st.plotly_chart(fig_line, use_container_width=True)
+        else:
+            st.warning("No se detectaron columnas de Fecha o Coste para el gráfico temporal.")
 
-    with col_chart2:
-        st.subheader("Relación Volumen vs Coste")
-        # Gráfico de dispersión para ver eficiencia
-        fig_scatter = px.scatter(
-            df_filtered,
-            x='Impressions',
-            y='Cost',
-            size='Cost',
-            color='Country',
-            hover_name='Country',
-            title="¿Quién da más tráfico por menos dinero?"
-        )
-        st.plotly_chart(fig_scatter, use_container_width=True)
+    # Gráfico 2: Desglose por País
+    with col2:
+        if country_col and cost_col:
+            st.subheader("🌍 Gasto por País")
+            fig_bar = px.bar(df_filtered, x=country_col, y=cost_col, color=country_col, title="Inversión por Geo")
+            st.plotly_chart(fig_bar, use_container_width=True)
+        else:
+            st.warning("No se detectaron columnas de País o Coste para el gráfico.")
 
-    # --- TABLA DE DATOS ---
-    with st.expander("Ver Tabla de Datos Completa"):
+    # TABLA DE DATOS
+    with st.expander("Ver Datos Brutos"):
         st.dataframe(df_filtered)
-
+        
 else:
-    st.error("⚠️ No se pudieron cargar los datos. Revisa que el enlace al Excel/CSV sea público y correcto.")
+    st.error("No se pudo conectar con el Excel. Asegúrate de que está compartido como 'Cualquiera con el enlace'.")

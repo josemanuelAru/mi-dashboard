@@ -22,10 +22,8 @@ def find_column_strict(columns, candidates):
     
     for cand in candidates:
         cand = cand.lower().strip()
-        # 1. Búsqueda EXACTA
         if cand in cols_clean:
             return columns[cols_clean.index(cand)]
-        # 2. Búsqueda Parcial segura
         if len(cand) > 3:
             for i, col in enumerate(cols_clean):
                 if cand in col:
@@ -52,21 +50,24 @@ def load_data():
             c_cost = find_column_strict(df.columns, ['cost', 'coste', 'spend', 'total cost'])
             c_rev = find_column_strict(df.columns, ['revenue total', 'revenue', 'ingresos', 'gain'])
 
-            # Columnas ZP
+            # Columnas ZP y PC
             c_rec_vis = find_column_strict(df.columns, ['received visits zp', 'received visits'])
             c_sold_vis = find_column_strict(df.columns, ['sold visits zp', 'sold visits'])
             c_perc_sold = find_column_strict(df.columns, ['%sold zp', '% sold zp', 'sold %'])
-            c_cpm = find_column_strict(df.columns, ['cpm zp', 'cpm'])
+            c_cpm_zp = find_column_strict(df.columns, ['cpm zp', 'cpm'])
+            c_cpm_pc = find_column_strict(df.columns, ['cpm pc']) # Nueva columna detectada
 
             # Asignamos nombres estándar
             if c_date: col_mapping[c_date] = 'Date'
             if c_country: col_mapping[c_country] = 'Country'
             if c_cost: col_mapping[c_cost] = 'Cost'
             if c_rev: col_mapping[c_rev] = 'Revenue'
+            
             if c_rec_vis: col_mapping[c_rec_vis] = 'Received Visits ZP'
             if c_sold_vis: col_mapping[c_sold_vis] = 'Sold Visits ZP'
             if c_perc_sold: col_mapping[c_perc_sold] = '% Sold ZP'
-            if c_cpm: col_mapping[c_cpm] = 'CPM ZP'
+            if c_cpm_zp: col_mapping[c_cpm_zp] = 'CPM ZP'
+            if c_cpm_pc: col_mapping[c_cpm_pc] = 'CPM PC'
 
             if col_mapping:
                 df.rename(columns=col_mapping, inplace=True)
@@ -79,7 +80,7 @@ def load_data():
                 continue
 
             # 4. LIMPIEZA NUMÉRICA
-            numeric_cols = ['Cost', 'Revenue', 'Received Visits ZP', 'Sold Visits ZP', '% Sold ZP', 'CPM ZP']
+            numeric_cols = ['Cost', 'Revenue', 'Received Visits ZP', 'Sold Visits ZP', '% Sold ZP', 'CPM ZP', 'CPM PC']
             for col in numeric_cols:
                 if col in df.columns:
                     if df[col].dtype == 'object':
@@ -155,7 +156,6 @@ if df is not None and not df.empty:
     available_zp = [c for c in possible_zp if c in df_filtered.columns]
     
     col_sel, col_chart = st.columns([1, 3])
-    
     with col_sel:
         st.info("👇 Elige qué ver en la gráfica:")
         selected_metrics = st.multiselect(
@@ -174,19 +174,41 @@ if df is not None and not df.empty:
                     agg_rules[m] = 'mean'
             
             df_zp = df_filtered.groupby('Date')[selected_metrics].agg(agg_rules).reset_index()
-            
-            fig_zp = px.line(
-                df_zp.melt(id_vars='Date', var_name='Metric', value_name='Value'), 
-                x='Date', y='Value', color='Metric', markers=True,
-                title="Evolución Temporal de Métricas ZP"
-            )
+            fig_zp = px.line(df_zp.melt(id_vars='Date', var_name='Metric', value_name='Value'), 
+                             x='Date', y='Value', color='Metric', markers=True,
+                             title="Evolución Temporal de Métricas ZP")
             st.plotly_chart(fig_zp, use_container_width=True)
         else:
             st.warning("Selecciona al menos una métrica a la izquierda.")
 
     st.divider()
 
-    # --- 3. GRÁFICA FINANCIERA PRINCIPAL ---
+    # --- 3. NUEVA GRÁFICA: CPM ZP vs CPM PC ---
+    st.subheader("📉 Comparativa CPM: ZP vs PC")
+    
+    cpm_cols = ['CPM ZP', 'CPM PC']
+    existing_cpm = [c for c in cpm_cols if c in df_filtered.columns]
+    
+    if existing_cpm:
+        # Calculamos el promedio diario de los CPMs
+        df_cpm = df_filtered.groupby('Date')[existing_cpm].mean().reset_index()
+        
+        fig_cpm = px.line(
+            df_cpm.melt(id_vars='Date', var_name='Tipo', value_name='CPM ($)'),
+            x='Date', 
+            y='CPM ($)', 
+            color='Tipo',
+            markers=True,
+            color_discrete_map={'CPM ZP': '#FFA15A', 'CPM PC': '#636EFA'},
+            title="Evolución Diaria del CPM (Promedio)"
+        )
+        st.plotly_chart(fig_cpm, use_container_width=True)
+    else:
+        st.warning("No se encontraron columnas de CPM en los datos filtrados.")
+
+    st.divider()
+
+    # --- 4. GRÁFICA FINANCIERA PRINCIPAL ---
     st.subheader("📅 Coste vs Revenue Diario")
     if 'Cost' in df_filtered.columns and 'Revenue' in df_filtered.columns:
         df_daily = df_filtered.groupby('Date')[['Cost', 'Revenue']].sum().reset_index()
@@ -198,7 +220,6 @@ if df is not None and not df.empty:
             color_discrete_map={'Cost':'#EF553B', 'Revenue':'#00CC96'},
             markers=True
         )
-        # Usamos todo el ancho disponible ahora que no hay gráfica al lado
         st.plotly_chart(fig_daily, use_container_width=True)
 
     with st.expander("📂 Ver Datos Brutos"):

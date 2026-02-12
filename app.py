@@ -6,7 +6,7 @@ import plotly.express as px
 st.set_page_config(page_title="Dashboard Master: Cost vs Revenue", page_icon="💰", layout="wide")
 
 # ==========================================
-# ⚙️ TUS URLS Y DATOS (CONFIRMADOS)
+# ⚙️ TUS URLS Y DATOS
 # ==========================================
 SHEET_ID = "1WuBv1esTxZAfC07BPwWzjsz5TZqfUHa6MOzNIAEOMew"
 GID_ANDROID = "368085162"    # Datos por AOS/dia
@@ -25,7 +25,7 @@ def find_column_strict(columns, candidates):
         # 1. Búsqueda EXACTA
         if cand in cols_clean:
             return columns[cols_clean.index(cand)]
-        # 2. Búsqueda Parcial segura (solo si no es una letra suelta como 'v')
+        # 2. Búsqueda Parcial segura
         if len(cand) > 3:
             for i, col in enumerate(cols_clean):
                 if cand in col:
@@ -52,7 +52,7 @@ def load_data():
             c_cost = find_column_strict(df.columns, ['cost', 'coste', 'spend', 'total cost'])
             c_rev = find_column_strict(df.columns, ['revenue total', 'revenue', 'ingresos', 'gain'])
 
-            # Columnas ZP (Tus métricas solicitadas)
+            # Columnas ZP
             c_rec_vis = find_column_strict(df.columns, ['received visits zp', 'received visits'])
             c_sold_vis = find_column_strict(df.columns, ['sold visits zp', 'sold visits'])
             c_perc_sold = find_column_strict(df.columns, ['%sold zp', '% sold zp', 'sold %'])
@@ -68,14 +68,13 @@ def load_data():
             if c_perc_sold: col_mapping[c_perc_sold] = '% Sold ZP'
             if c_cpm: col_mapping[c_cpm] = 'CPM ZP'
 
-            # Aplicar cambios
             if col_mapping:
                 df.rename(columns=col_mapping, inplace=True)
             
             # 3. FILTRO DE SEGURIDAD (FECHAS)
             if 'Date' in df.columns:
                 df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
-                df = df.dropna(subset=['Date']) # Borramos filas sin fecha válida
+                df = df.dropna(subset=['Date']) 
             else:
                 continue
 
@@ -152,7 +151,6 @@ if df is not None and not df.empty:
     # --- 2. ANÁLISIS DE MÉTRICAS ZP (SELECTOR) ---
     st.subheader("📈 Métricas ZP Personalizables")
     
-    # Preparamos las columnas disponibles
     possible_zp = ['Received Visits ZP', 'Sold Visits ZP', '% Sold ZP', 'CPM ZP']
     available_zp = [c for c in possible_zp if c in df_filtered.columns]
     
@@ -168,7 +166,6 @@ if df is not None and not df.empty:
     
     with col_chart:
         if selected_metrics:
-            # Agrupación inteligente: Suma para visitas, Promedio para % y CPM
             agg_rules = {}
             for m in selected_metrics:
                 if 'Visits' in m:
@@ -178,11 +175,10 @@ if df is not None and not df.empty:
             
             df_zp = df_filtered.groupby('Date')[selected_metrics].agg(agg_rules).reset_index()
             
-            # Gráfica
             fig_zp = px.line(
                 df_zp.melt(id_vars='Date', var_name='Metric', value_name='Value'), 
                 x='Date', y='Value', color='Metric', markers=True,
-                title="Evolución Temporal de Métricas Seleccionadas"
+                title="Evolución Temporal de Métricas ZP"
             )
             st.plotly_chart(fig_zp, use_container_width=True)
         else:
@@ -190,23 +186,20 @@ if df is not None and not df.empty:
 
     st.divider()
 
-    # --- 3. OTRAS GRÁFICAS ---
-    c1, c2 = st.columns(2)
-    
-    with c1:
-        st.subheader("📅 Coste vs Revenue")
-        if 'Cost' in df_filtered.columns and 'Revenue' in df_filtered.columns:
-            df_daily = df_filtered.groupby('Date')[['Cost', 'Revenue']].sum().reset_index()
-            fig_daily = px.line(df_daily.melt(id_vars='Date'), x='Date', y='value', color='variable',
-                                color_discrete_map={'Cost':'#EF553B', 'Revenue':'#00CC96'})
-            st.plotly_chart(fig_daily, use_container_width=True)
-            
-    with c2:
-        st.subheader("🌍 Top Países (Gasto)")
-        if 'Country' in df_filtered.columns and 'Cost' in df_filtered.columns:
-            top_countries = df_filtered.groupby('Country')['Cost'].sum().nlargest(10).reset_index()
-            fig_bar = px.bar(top_countries, x='Country', y='Cost', color='Cost')
-            st.plotly_chart(fig_bar, use_container_width=True)
+    # --- 3. GRÁFICA FINANCIERA PRINCIPAL ---
+    st.subheader("📅 Coste vs Revenue Diario")
+    if 'Cost' in df_filtered.columns and 'Revenue' in df_filtered.columns:
+        df_daily = df_filtered.groupby('Date')[['Cost', 'Revenue']].sum().reset_index()
+        fig_daily = px.line(
+            df_daily.melt(id_vars='Date'), 
+            x='Date', 
+            y='value', 
+            color='variable',
+            color_discrete_map={'Cost':'#EF553B', 'Revenue':'#00CC96'},
+            markers=True
+        )
+        # Usamos todo el ancho disponible ahora que no hay gráfica al lado
+        st.plotly_chart(fig_daily, use_container_width=True)
 
     with st.expander("📂 Ver Datos Brutos"):
         st.dataframe(df_filtered)

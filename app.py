@@ -150,20 +150,24 @@ if df is not None and not df.empty:
     st.divider()
 
     # ========================================================
-    # 1️⃣ GRÁFICA PRINCIPAL: COSTE VS REVENUE DIARIO
+    # 1️⃣ GRÁFICA PRINCIPAL: COSTE VS REVENUE VS GAIN
     # ========================================================
-    st.subheader("📅 1. Evolución Financiera: Coste vs Revenue")
+    st.subheader("📅 1. Evolución Financiera: Coste, Revenue y Gain")
     
     if 'Cost' in df_filtered.columns and 'Revenue' in df_filtered.columns:
         df_daily = df_filtered.groupby('Date')[['Cost', 'Revenue']].sum().reset_index()
+        
+        # Calculamos Gain para la gráfica
+        df_daily['Gain'] = df_daily['Revenue'] - df_daily['Cost']
+        
         fig_daily = px.line(
-            df_daily.melt(id_vars='Date'), 
+            df_daily.melt(id_vars='Date', value_vars=['Cost', 'Revenue', 'Gain']), 
             x='Date', 
             y='value', 
             color='variable',
-            color_discrete_map={'Cost':'#EF553B', 'Revenue':'#00CC96'},
+            color_discrete_map={'Cost':'#EF553B', 'Revenue':'#00CC96', 'Gain':'#636EFA'},
             markers=True,
-            title="Comparativa Diaria de Ingresos y Gastos"
+            title="Evolución de Ingresos, Gastos y Beneficio Neto"
         )
         st.plotly_chart(fig_daily, use_container_width=True)
     else:

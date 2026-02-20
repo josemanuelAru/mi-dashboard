@@ -97,18 +97,18 @@ def load_data():
 def load_targets_data():
     url = get_url(GID_TARGETS)
     try:
+        # Vuelve a leer normalmente desde la primera fila
         df = pd.read_csv(url)
+        
         df.columns = df.columns.str.strip().str.replace('"', '')
         original_cols = list(df.columns)
         
         col_mapping = {}
         c_date = find_column_strict(df.columns, ['date', 'day', 'fecha', 'v', 'time', 'interval', 'period'])
         c_target = find_column_strict(df.columns, ['target', 'id target', 'subid', 'publisher', 'source', 'placement', 'keyword', 'campaign'])
-        c_geo = find_column_strict(df.columns, ['geo', 'country', 'pais']) # Buscamos columna GEO
         
         if c_date: col_mapping[c_date] = 'Date'
         if c_target: col_mapping[c_target] = 'Target'
-        if c_geo: col_mapping[c_geo] = 'GEO'
         
         if col_mapping:
             df.rename(columns=col_mapping, inplace=True)
@@ -116,21 +116,9 @@ def load_targets_data():
         if 'Date' in df.columns:
             df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
             df = df.dropna(subset=['Date']) 
-            
-        # ✂️ SEPARADOR DE GEO Y OS (LO NUEVO QUE HAS PEDIDO)
-        if 'GEO' in df.columns:
-            # Aseguramos que sea texto
-            df['GEO'] = df['GEO'].astype(str).str.strip()
-            
-            # Cogemos todo desde la 3º letra en adelante para el 'OS' (Ej: IOS, AOS)
-            df['OS'] = df['GEO'].str[2:].str.upper()
-            
-            # Nos quedamos solo con las 2 primeras letras para el 'GEO' (Ej: US, DE)
-            df['GEO'] = df['GEO'].str[:2].str.upper()
         
-        # Limpieza de valores
         for col in df.columns:
-            if col not in ['Date', 'Target', 'GEO', 'OS'] and df[col].dtype == 'object':
+            if col not in ['Date', 'Target'] and df[col].dtype == 'object':
                 try:
                     df[col] = df[col].astype(str).str.replace('$', '', regex=False).str.replace(',', '', regex=False).str.replace('%', '', regex=False)
                     df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
@@ -270,20 +258,9 @@ with tab_targets:
             df_t_filtered = df_targets[mask_t]
 
             numeric_columns = df_t_filtered.select_dtypes(include=['float64', 'int64']).columns.tolist()
-            
-            # --- AGRUPACIÓN CON LAS NUEVAS COLUMNAS GEO Y OS ---
-            group_cols = ['Date', 'Target']
-            if 'GEO' in df_t_filtered.columns:
-                group_cols.insert(1, 'GEO') # Añadimos GEO al lado de la fecha
-            if 'OS' in df_t_filtered.columns:
-                group_cols.insert(2, 'OS')  # Añadimos OS al lado del GEO
-                
-            df_grouped = df_t_filtered.groupby(group_cols)[numeric_columns].sum().reset_index()
+            df_grouped = df_t_filtered.groupby(['Date', 'Target'])[numeric_columns].sum().reset_index()
             df_grouped['Date'] = df_grouped['Date'].dt.strftime('%Y-%m-%d')
-            
-            # Ordenamos para que lo más reciente salga arriba
-            sort_ascending = [False] + [True] * (len(group_cols) - 1)
-            df_grouped = df_grouped.sort_values(by=group_cols, ascending=sort_ascending)
+            df_grouped = df_grouped.sort_values(by=['Date', 'Target'], ascending=[False, True])
             
             st.markdown(f"**Total de filas mostradas:** {len(df_grouped)}")
             st.dataframe(df_grouped, use_container_width=True, height=600, hide_index=True)
@@ -293,4 +270,5 @@ with tab_targets:
             st.error("⚠️ Sigo sin encontrar la columna 'Date' o 'Target'.")
             st.info(f"🕵️ **Las columnas que estoy leyendo en la fila 1 son:** \n\n `{cols_found}`")
     else:
+        st.info("⏳ Cargando datos de Targets o el documento está vacío...")
         st.info("⏳ Cargando datos de Targets o el documento está vacío...")

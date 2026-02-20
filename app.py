@@ -11,15 +11,14 @@ st.set_page_config(page_title="Dashboard Master: Cost vs Revenue", page_icon="�
 SHEET_ID = "1WuBv1esTxZAfC07BPwWzjsz5TZqfUHa6MOzNIAEOMew"
 GID_ANDROID = "368085162"    # Datos por AOS/dia
 GID_IOS = "1225911759"       # Datos por IOS/dia
+GID_TARGETS = "0"            # NUEVO: Datos de Targets
 
 def get_url(gid):
     return f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid={gid}"
 
 # --- FUNCIÓN DE BÚSQUEDA EXACTA (BLINDADA) ---
 def find_column_strict(columns, candidates):
-    """Busca columnas de forma segura para evitar errores de lectura."""
     cols_clean = [str(c).lower().strip() for c in columns]
-    
     for cand in candidates:
         cand = cand.lower().strip()
         if cand in cols_clean:
@@ -30,6 +29,7 @@ def find_column_strict(columns, candidates):
                     return columns[i]
     return None
 
+# --- CARGA DEL DASHBOARD PRINCIPAL (AOS/IOS) ---
 @st.cache_data(ttl=600)
 def load_data():
     urls = {'Android': get_url(GID_ANDROID), 'iOS': get_url(GID_IOS)}
@@ -37,32 +37,24 @@ def load_data():
     
     for os_name, url in urls.items():
         try:
-            # 1. Leer CSV
             df = pd.read_csv(url)
             df.columns = df.columns.str.strip().str.replace('"', '')
             
-            # 2. MAPEO DE COLUMNAS
             col_mapping = {}
-            
-            # Columnas Básicas
             c_date = find_column_strict(df.columns, ['date', 'day', 'fecha', 'v', 'time'])
             c_country = find_column_strict(df.columns, ['country', 'geo', 'geo/os', 'pais'])
             c_cost = find_column_strict(df.columns, ['cost', 'coste', 'spend', 'total cost'])
             c_rev = find_column_strict(df.columns, ['revenue total', 'revenue', 'ingresos', 'gain'])
-
-            # Columnas ZP y PC
             c_rec_vis = find_column_strict(df.columns, ['received visits zp', 'received visits'])
             c_sold_vis = find_column_strict(df.columns, ['sold visits zp', 'sold visits'])
             c_perc_sold = find_column_strict(df.columns, ['%sold zp', '% sold zp', 'sold %'])
             c_cpm_zp = find_column_strict(df.columns, ['cpm zp', 'cpm'])
             c_cpm_pc = find_column_strict(df.columns, ['cpm pc'])
 
-            # Asignamos nombres estándar
             if c_date: col_mapping[c_date] = 'Date'
             if c_country: col_mapping[c_country] = 'Country'
             if c_cost: col_mapping[c_cost] = 'Cost'
             if c_rev: col_mapping[c_rev] = 'Revenue'
-            
             if c_rec_vis: col_mapping[c_rec_vis] = 'Received Visits ZP'
             if c_sold_vis: col_mapping[c_sold_vis] = 'Sold Visits ZP'
             if c_perc_sold: col_mapping[c_perc_sold] = '% Sold ZP'
@@ -72,23 +64,24 @@ def load_data():
             if col_mapping:
                 df.rename(columns=col_mapping, inplace=True)
             
-            # 3. FILTRO DE SEGURIDAD (FECHAS)
             if 'Date' in df.columns:
                 df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
                 df = df.dropna(subset=['Date']) 
             else:
                 continue
 
-            # 4. LIMPIEZA NUMÉRICA
             numeric_cols = ['Cost', 'Revenue', 'Received Visits ZP', 'Sold Visits ZP', '% Sold ZP', 'CPM ZP', 'CPM PC']
             for col in numeric_cols:
                 if col in df.columns:
                     if df[col].dtype == 'object':
-                        df[col] = df[col].astype(str).str.replace('$', '', regex=False)\
-                                                     .str.replace(',', '', regex=False)\
-                                                     .str.replace('%', '', regex=False)
+                        df[col] = df[col].astype(str).str.replace('$', '', regex=False).str.replace(',', '', regex=False).str.replace('%', '', regex=False)
                         df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
             
+            if 'Cost' in df.columns and 'Revenue' in df.columns:
+                df['Gain'] = df['Revenue'] - df['Cost']
+            else:
+                df['Gain'] = 0
+
             df['OS'] = os_name
             dfs.append(df)
             
@@ -99,149 +92,201 @@ def load_data():
         return pd.concat(dfs, ignore_index=True).fillna(0)
     return None
 
-# --- CARGAR DATOS ---
-df = load_data()
+# --- CARGA DE LA PESTAÑA TARGETS ---
+@st.cache_data(ttl=600)
+def load_targets_data():
+    url = get_url(GID_TARGETS)
+    try:
+        df = pd.read_csv(url)
+        df.columns = df.columns.str.strip().str.replace('"', '')
+        
+        # Mapeo básico para asegurar que encontramos Fecha y Target
+        col_mapping = {}
+        c_date = find_column_strict(df.columns, ['date', 'day', 'fecha', 'v', 'time'])
+        c_target = find_column_strict(df.columns, ['target', 'id target', 'subid', 'publisher'])
+        
+        if c_date: col_mapping[c_date] = 'Date'
+        if c_target: col_mapping[c_target] = 'Target'
+        
+        if col_mapping:
+            df.rename(columns=col_mapping, inplace=True)
+
+        if 'Date' in df.columns:
+            df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
+            df = df.dropna(subset=['Date']) 
+        
+        # Limpieza de valores monetarios/porcentajes en toda la tabla
+        for col in df.columns:
+            if col not in ['Date', 'Target'] and df[col].dtype == 'object':
+                try:
+                    # Intenta limpiar si detecta números
+                    df[col] = df[col].astype(str).str.replace('$', '', regex=False).str.replace(',', '', regex=False).str.replace('%', '', regex=False)
+                    df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+                except:
+                    pass
+        return df
+    except Exception as e:
+        st.error(f"Error cargando pestaña Targets: {e}")
+        return None
+
+# --- CARGAR AMBAS BASES DE DATOS ---
+df_main = load_data()
+df_targets = load_targets_data()
 
 # --- INTERFAZ ---
-st.title("📊 Dashboard Financiero & Métricas ZP")
+st.title("📊 Dashboard Financiero & Operativo")
 
-if df is not None and not df.empty:
-    
-    # --- FILTROS ---
-    st.sidebar.header("Filtros Globales")
-    
-    min_date = df['Date'].min()
-    max_date = df['Date'].max()
-    
-    if pd.isnull(min_date) or pd.isnull(max_date):
-        st.error("⚠️ No hay fechas válidas. Revisa el Excel.")
-        st.stop()
+# Creamos las pestañas en la parte superior
+tab_principal, tab_targets = st.tabs(["📈 Dashboard Principal", "🎯 Análisis de Targets"])
+
+# ==============================================================================
+# 🗂️ PESTAÑA 1: DASHBOARD PRINCIPAL
+# ==============================================================================
+with tab_principal:
+    if df_main is not None and not df_main.empty:
         
-    date_range = st.sidebar.date_input("Rango de Fechas", [min_date, max_date])
-    
-    selected_os = st.sidebar.multiselect("Sistema Operativo", df['OS'].unique(), default=df['OS'].unique())
-    
-    countries_list = sorted(df['Country'].unique().astype(str)) if 'Country' in df.columns else []
-    selected_countries = st.sidebar.multiselect("Países", countries_list, default=countries_list)
-
-    # --- APLICAR FILTROS ---
-    mask = (df['OS'].isin(selected_os))
-    if len(date_range) == 2:
-        mask = mask & (df['Date'] >= pd.to_datetime(date_range[0])) & (df['Date'] <= pd.to_datetime(date_range[1]))
-    if selected_countries and 'Country' in df.columns:
-        mask = mask & (df['Country'].isin(selected_countries))
+        # FILTROS
+        st.sidebar.header("Filtros Globales (Dashboard)")
+        min_date = df_main['Date'].min()
+        max_date = df_main['Date'].max()
         
-    df_filtered = df[mask]
-
-    # --- KPI SUMMARY ---
-    st.subheader("💰 Resumen Financiero")
-    
-    cost = df_filtered['Cost'].sum() if 'Cost' in df_filtered.columns else 0
-    rev = df_filtered['Revenue'].sum() if 'Revenue' in df_filtered.columns else 0
-    profit = rev - cost
-    roi = (profit / cost * 100) if cost > 0 else 0
-    
-    k1, k2, k3, k4 = st.columns(4)
-    k1.metric("Coste Total", f"${cost:,.2f}")
-    k2.metric("Revenue Total", f"${rev:,.2f}")
-    k3.metric("Beneficio", f"${profit:,.2f}")
-    k4.metric("ROI Global", f"{roi:.2f}%")
-    
-    st.divider()
-
-    # ========================================================
-    # 1️⃣ GRÁFICA PRINCIPAL: COSTE VS REVENUE VS GAIN
-    # ========================================================
-    st.subheader("📅 1. Evolución Financiera: Coste, Revenue y Gain")
-    
-    if 'Cost' in df_filtered.columns and 'Revenue' in df_filtered.columns:
-        df_daily = df_filtered.groupby('Date')[['Cost', 'Revenue']].sum().reset_index()
-        
-        # Calculamos Gain para la gráfica
-        df_daily['Gain'] = df_daily['Revenue'] - df_daily['Cost']
-        
-        fig_daily = px.line(
-            df_daily.melt(id_vars='Date', value_vars=['Cost', 'Revenue', 'Gain']), 
-            x='Date', 
-            y='value', 
-            color='variable',
-            color_discrete_map={'Cost':'#EF553B', 'Revenue':'#00CC96', 'Gain':'#636EFA'},
-            markers=True,
-            title="Evolución de Ingresos, Gastos y Beneficio Neto"
-        )
-        st.plotly_chart(fig_daily, use_container_width=True)
-    else:
-        st.warning("No hay datos de Coste o Revenue disponibles.")
-
-    st.divider()
-
-    # ========================================================
-    # 2️⃣ GRÁFICA SECUNDARIA: COMPARATIVA CPM (ZP vs PC)
-    # ========================================================
-    st.subheader("📉 2. Calidad del Tráfico: CPM ZP vs CPM PC")
-    
-    cpm_cols = ['CPM ZP', 'CPM PC']
-    existing_cpm = [c for c in cpm_cols if c in df_filtered.columns]
-    
-    if existing_cpm:
-        # Promedio diario
-        df_cpm = df_filtered.groupby('Date')[existing_cpm].mean().reset_index()
-        
-        fig_cpm = px.line(
-            df_cpm.melt(id_vars='Date', var_name='Tipo', value_name='CPM ($)'),
-            x='Date', 
-            y='CPM ($)', 
-            color='Tipo',
-            markers=True,
-            color_discrete_map={'CPM ZP': '#FFA15A', 'CPM PC': '#636EFA'},
-            title="Evolución del Coste por Mil (Promedio Diario)"
-        )
-        st.plotly_chart(fig_cpm, use_container_width=True)
-    else:
-        st.warning("No se encontraron columnas de CPM en los datos.")
-
-    st.divider()
-
-    # ========================================================
-    # 3️⃣ GRÁFICA TERCIARIA: MÉTRICAS ZP (SELECTOR)
-    # ========================================================
-    st.subheader("📈 3. Análisis Detallado ZP (Personalizable)")
-    
-    possible_zp = ['Received Visits ZP', 'Sold Visits ZP', '% Sold ZP', 'CPM ZP']
-    available_zp = [c for c in possible_zp if c in df_filtered.columns]
-    
-    col_sel, col_chart = st.columns([1, 3])
-    
-    with col_sel:
-        st.info("👇 Configura esta gráfica:")
-        selected_metrics = st.multiselect(
-            "Selecciona Métricas:", 
-            options=available_zp,
-            default=available_zp[:2] if available_zp else None
-        )
-    
-    with col_chart:
-        if selected_metrics:
-            agg_rules = {}
-            for m in selected_metrics:
-                if 'Visits' in m:
-                    agg_rules[m] = 'sum'
-                else:
-                    agg_rules[m] = 'mean'
+        if pd.isnull(min_date) or pd.isnull(max_date):
+            st.error("⚠️ No hay fechas válidas. Revisa el Excel.")
+            st.stop()
             
-            df_zp = df_filtered.groupby('Date')[selected_metrics].agg(agg_rules).reset_index()
-            fig_zp = px.line(
-                df_zp.melt(id_vars='Date', var_name='Metric', value_name='Value'), 
-                x='Date', y='Value', color='Metric', markers=True,
-                title="Tendencia de Métricas Seleccionadas"
+        date_range = st.sidebar.date_input("Rango de Fechas", [min_date, max_date])
+        selected_os = st.sidebar.multiselect("Sistema Operativo", df_main['OS'].unique(), default=df_main['OS'].unique())
+        countries_list = sorted(df_main['Country'].unique().astype(str)) if 'Country' in df_main.columns else []
+        selected_countries = st.sidebar.multiselect("Países", countries_list, default=countries_list)
+
+        mask = (df_main['OS'].isin(selected_os))
+        if len(date_range) == 2:
+            mask = mask & (df_main['Date'] >= pd.to_datetime(date_range[0])) & (df_main['Date'] <= pd.to_datetime(date_range[1]))
+        if selected_countries and 'Country' in df_main.columns:
+            mask = mask & (df_main['Country'].isin(selected_countries))
+            
+        df_filtered = df_main[mask]
+
+        # --- KPI SUMMARY ---
+        st.subheader("💰 Resumen Financiero")
+        cost = df_filtered['Cost'].sum() if 'Cost' in df_filtered.columns else 0
+        rev = df_filtered['Revenue'].sum() if 'Revenue' in df_filtered.columns else 0
+        profit = df_filtered['Gain'].sum() if 'Gain' in df_filtered.columns else (rev - cost)
+        roi = (profit / cost * 100) if cost > 0 else 0
+        
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("Coste Total", f"${cost:,.2f}")
+        k2.metric("Revenue Total", f"${rev:,.2f}")
+        k3.metric("Beneficio", f"${profit:,.2f}")
+        k4.metric("ROI Global", f"{roi:.2f}%")
+        
+        st.divider()
+
+        # --- 1️⃣ GRÁFICA: COSTE VS REVENUE VS GAIN ---
+        st.subheader("📅 1. Evolución Financiera: Coste, Revenue y Gain")
+        if 'Cost' in df_filtered.columns and 'Revenue' in df_filtered.columns:
+            df_daily = df_filtered.groupby('Date')[['Cost', 'Revenue', 'Gain']].sum().reset_index()
+            fig_daily = px.line(
+                df_daily.melt(id_vars='Date', value_vars=['Cost', 'Revenue', 'Gain']), 
+                x='Date', y='value', color='variable',
+                color_discrete_map={'Cost':'#EF553B', 'Revenue':'#00CC96', 'Gain':'#2962FF'},
+                markers=True
             )
-            st.plotly_chart(fig_zp, use_container_width=True)
+            st.plotly_chart(fig_daily, use_container_width=True)
+
+        st.divider()
+
+        # --- 2️⃣ GRÁFICA: CPM ---
+        st.subheader("📉 2. Calidad del Tráfico: CPM ZP vs CPM PC")
+        cpm_cols = ['CPM ZP', 'CPM PC']
+        existing_cpm = [c for c in cpm_cols if c in df_filtered.columns]
+        if existing_cpm:
+            df_cpm = df_filtered.groupby('Date')[existing_cpm].mean().reset_index()
+            fig_cpm = px.line(
+                df_cpm.melt(id_vars='Date', var_name='Tipo', value_name='CPM ($)'),
+                x='Date', y='CPM ($)', color='Tipo', markers=True,
+                color_discrete_map={'CPM ZP': '#FFA15A', 'CPM PC': '#636EFA'}
+            )
+            st.plotly_chart(fig_cpm, use_container_width=True)
+
+        st.divider()
+
+        # --- 3️⃣ GRÁFICA: ZP ---
+        st.subheader("📈 3. Análisis Detallado ZP (Personalizable)")
+        possible_zp = ['Received Visits ZP', 'Sold Visits ZP', '% Sold ZP', 'CPM ZP']
+        available_zp = [c for c in possible_zp if c in df_filtered.columns]
+        
+        col_sel, col_chart = st.columns([1, 3])
+        with col_sel:
+            selected_metrics = st.multiselect("Selecciona Métricas:", options=available_zp, default=available_zp[:2] if available_zp else None)
+        with col_chart:
+            if selected_metrics:
+                agg_rules = {m: 'sum' if 'Visits' in m else 'mean' for m in selected_metrics}
+                df_zp = df_filtered.groupby('Date')[selected_metrics].agg(agg_rules).reset_index()
+                fig_zp = px.line(
+                    df_zp.melt(id_vars='Date', var_name='Metric', value_name='Value'), 
+                    x='Date', y='Value', color='Metric', markers=True
+                )
+                st.plotly_chart(fig_zp, use_container_width=True)
+
+    else:
+        st.info("⏳ Cargando datos del Dashboard...")
+
+
+# ==============================================================================
+# 🎯 PESTAÑA 2: ANÁLISIS DE TARGETS
+# ==============================================================================
+with tab_targets:
+    st.subheader("🎯 Tabla de Rendimiento por Target y Día")
+    
+    if df_targets is not None and not df_targets.empty:
+        if 'Date' in df_targets.columns and 'Target' in df_targets.columns:
+            
+            # Filtro de Fechas específico para Targets (opcional)
+            col_f1, col_f2 = st.columns(2)
+            min_t_date = df_targets['Date'].min()
+            max_t_date = df_targets['Date'].max()
+            
+            with col_f1:
+                t_date_range = st.date_input("Filtrar Fechas (Targets)", [min_t_date, max_t_date], key="target_dates")
+                
+            with col_f2:
+                # Buscador de Targets para no saturar la tabla si hay miles
+                all_targets = sorted(df_targets['Target'].dropna().astype(str).unique())
+                t_selected = st.multiselect("🔍 Buscar/Filtrar Target específico:", options=all_targets, placeholder="Todos los targets...")
+
+            # Aplicar filtros a Targets
+            mask_t = pd.Series(True, index=df_targets.index)
+            if len(t_date_range) == 2:
+                mask_t = mask_t & (df_targets['Date'] >= pd.to_datetime(t_date_range[0])) & (df_targets['Date'] <= pd.to_datetime(t_date_range[1]))
+            if t_selected:
+                mask_t = mask_t & (df_targets['Target'].astype(str).isin(t_selected))
+                
+            df_t_filtered = df_targets[mask_t]
+
+            # Seleccionar columnas numéricas para sumar
+            numeric_columns = df_t_filtered.select_dtypes(include=['float64', 'int64']).columns.tolist()
+            
+            # Agrupar por Fecha y Target sumando los valores
+            df_grouped = df_t_filtered.groupby(['Date', 'Target'])[numeric_columns].sum().reset_index()
+            
+            # Formatear la fecha para que se vea bonita (sin la hora)
+            df_grouped['Date'] = df_grouped['Date'].dt.strftime('%Y-%m-%d')
+            
+            # Ordenar por fecha descendente
+            df_grouped = df_grouped.sort_values(by=['Date', 'Target'], ascending=[False, True])
+            
+            st.markdown(f"**Total de filas mostradas:** {len(df_grouped)}")
+            
+            # Mostrar tabla a pantalla completa
+            st.dataframe(
+                df_grouped,
+                use_container_width=True,
+                height=600,
+                hide_index=True
+            )
+            
         else:
-            st.warning("Selecciona al menos una métrica en el menú izquierdo.")
-
-    # --- FOOTER ---
-    with st.expander("📂 Ver Datos Brutos"):
-        st.dataframe(df_filtered)
-
-else:
-    st.info("⏳ Cargando datos... (Si tarda, revisa permisos del Sheet)")
+            st.warning("⚠️ No se encontró la columna 'Date' o 'Target' en esta pestaña. Revisa los encabezados de tu Excel.")
+    else:
+        st.info("⏳ Cargando datos de Targets...")

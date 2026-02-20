@@ -11,7 +11,7 @@ st.set_page_config(page_title="Dashboard Master: Cost vs Revenue", page_icon="�
 SHEET_ID = "1WuBv1esTxZAfC07BPwWzjsz5TZqfUHa6MOzNIAEOMew"
 GID_ANDROID = "368085162"    # Datos por AOS/dia
 GID_IOS = "1225911759"       # Datos por IOS/dia
-GID_TARGETS = "0"            # NUEVO: Datos de Targets
+GID_TARGETS = "0"            # Datos pestaña Zeropark
 
 def get_url(gid):
     return f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid={gid}"
@@ -92,7 +92,7 @@ def load_data():
         return pd.concat(dfs, ignore_index=True).fillna(0)
     return None
 
-# --- CARGA DE LA PESTAÑA TARGETS ---
+# --- CARGA DE LA PESTAÑA TARGETS (ZEROPARK) ---
 @st.cache_data(ttl=600)
 def load_targets_data():
     url = get_url(GID_TARGETS)
@@ -100,10 +100,13 @@ def load_targets_data():
         df = pd.read_csv(url)
         df.columns = df.columns.str.strip().str.replace('"', '')
         
-        # Mapeo básico para asegurar que encontramos Fecha y Target
+        # Guardamos las columnas originales para el "Chivato" si algo falla
+        original_cols = list(df.columns)
+        
+        # Mapeo ampliado con palabras típicas de Zeropark
         col_mapping = {}
-        c_date = find_column_strict(df.columns, ['date', 'day', 'fecha', 'v', 'time'])
-        c_target = find_column_strict(df.columns, ['target', 'id target', 'subid', 'publisher'])
+        c_date = find_column_strict(df.columns, ['date', 'day', 'fecha', 'v', 'time', 'interval', 'period'])
+        c_target = find_column_strict(df.columns, ['target', 'id target', 'subid', 'publisher', 'source', 'placement', 'keyword', 'campaign'])
         
         if c_date: col_mapping[c_date] = 'Date'
         if c_target: col_mapping[c_target] = 'Target'
@@ -119,14 +122,17 @@ def load_targets_data():
         for col in df.columns:
             if col not in ['Date', 'Target'] and df[col].dtype == 'object':
                 try:
-                    # Intenta limpiar si detecta números
                     df[col] = df[col].astype(str).str.replace('$', '', regex=False).str.replace(',', '', regex=False).str.replace('%', '', regex=False)
                     df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
                 except:
                     pass
+        
+        # Guardamos las columnas originales dentro del dataframe por si las necesitamos
+        df.attrs['original_cols'] = original_cols
         return df
+    
     except Exception as e:
-        st.error(f"Error cargando pestaña Targets: {e}")
+        st.error(f"Error cargando pestaña Zeropark: {e}")
         return None
 
 # --- CARGAR AMBAS BASES DE DATOS ---
@@ -137,7 +143,7 @@ df_targets = load_targets_data()
 st.title("📊 Dashboard Financiero & Operativo")
 
 # Creamos las pestañas en la parte superior
-tab_principal, tab_targets = st.tabs(["📈 Dashboard Principal", "🎯 Análisis de Targets"])
+tab_principal, tab_targets = st.tabs(["📈 Dashboard Principal", "🎯 Análisis de Targets (Zeropark)"])
 
 # ==============================================================================
 # 🗂️ PESTAÑA 1: DASHBOARD PRINCIPAL
@@ -145,7 +151,6 @@ tab_principal, tab_targets = st.tabs(["📈 Dashboard Principal", "🎯 Análisi
 with tab_principal:
     if df_main is not None and not df_main.empty:
         
-        # FILTROS
         st.sidebar.header("Filtros Globales (Dashboard)")
         min_date = df_main['Date'].min()
         max_date = df_main['Date'].max()
@@ -234,15 +239,15 @@ with tab_principal:
 
 
 # ==============================================================================
-# 🎯 PESTAÑA 2: ANÁLISIS DE TARGETS
+# 🎯 PESTAÑA 2: ANÁLISIS DE TARGETS (ZEROPARK)
 # ==============================================================================
 with tab_targets:
     st.subheader("🎯 Tabla de Rendimiento por Target y Día")
     
     if df_targets is not None and not df_targets.empty:
+        # COMPROBACIÓN CRÍTICA: ¿Tenemos Date y Target?
         if 'Date' in df_targets.columns and 'Target' in df_targets.columns:
             
-            # Filtro de Fechas específico para Targets (opcional)
             col_f1, col_f2 = st.columns(2)
             min_t_date = df_targets['Date'].min()
             max_t_date = df_targets['Date'].max()
@@ -251,11 +256,9 @@ with tab_targets:
                 t_date_range = st.date_input("Filtrar Fechas (Targets)", [min_t_date, max_t_date], key="target_dates")
                 
             with col_f2:
-                # Buscador de Targets para no saturar la tabla si hay miles
                 all_targets = sorted(df_targets['Target'].dropna().astype(str).unique())
                 t_selected = st.multiselect("🔍 Buscar/Filtrar Target específico:", options=all_targets, placeholder="Todos los targets...")
 
-            # Aplicar filtros a Targets
             mask_t = pd.Series(True, index=df_targets.index)
             if len(t_date_range) == 2:
                 mask_t = mask_t & (df_targets['Date'] >= pd.to_datetime(t_date_range[0])) & (df_targets['Date'] <= pd.to_datetime(t_date_range[1]))
@@ -264,29 +267,19 @@ with tab_targets:
                 
             df_t_filtered = df_targets[mask_t]
 
-            # Seleccionar columnas numéricas para sumar
             numeric_columns = df_t_filtered.select_dtypes(include=['float64', 'int64']).columns.tolist()
-            
-            # Agrupar por Fecha y Target sumando los valores
             df_grouped = df_t_filtered.groupby(['Date', 'Target'])[numeric_columns].sum().reset_index()
-            
-            # Formatear la fecha para que se vea bonita (sin la hora)
             df_grouped['Date'] = df_grouped['Date'].dt.strftime('%Y-%m-%d')
-            
-            # Ordenar por fecha descendente
             df_grouped = df_grouped.sort_values(by=['Date', 'Target'], ascending=[False, True])
             
             st.markdown(f"**Total de filas mostradas:** {len(df_grouped)}")
-            
-            # Mostrar tabla a pantalla completa
-            st.dataframe(
-                df_grouped,
-                use_container_width=True,
-                height=600,
-                hide_index=True
-            )
+            st.dataframe(df_grouped, use_container_width=True, height=600, hide_index=True)
             
         else:
-            st.warning("⚠️ No se encontró la columna 'Date' o 'Target' en esta pestaña. Revisa los encabezados de tu Excel.")
+            # EL CHIVATO: Si entra aquí, te mostrará qué columnas está leyendo realmente
+            cols_found = df_targets.attrs.get('original_cols', list(df_targets.columns))
+            st.error("⚠️ No se pudo armar la tabla porque faltan columnas clave.")
+            st.info(f"🕵️ **Columnas detectadas en la primera fila del Excel:** \n\n `{cols_found}`")
+            st.write("Si miras la lista de arriba, ¿cómo se llaman exactamente las columnas que equivalen a la Fecha y al Target? Dímelo y lo corrijo.")
     else:
-        st.info("⏳ Cargando datos de Targets...")
+        st.info("⏳ Cargando datos de Targets o el documento está vacío...")

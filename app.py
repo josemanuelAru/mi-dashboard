@@ -97,9 +97,7 @@ def load_data():
 def load_targets_data():
     url = get_url(GID_TARGETS)
     try:
-        # Lee normalmente desde la primera fila
         df = pd.read_csv(url)
-        
         df.columns = df.columns.str.strip().str.replace('"', '')
         original_cols = list(df.columns)
         
@@ -119,13 +117,9 @@ def load_targets_data():
 
         # ✂️ EXTRAER GEO Y OS DEL TARGET
         if 'Target' in df.columns:
-            # 1. GEO: Extraemos 2 letras justo después del guión y las ponemos en Mayúsculas
             df['GEO'] = df['Target'].astype(str).str.extract(r'-(.{2})', expand=False).str.upper()
-            
-            # 2. OS: Si contiene "io" es iOS, si no, es Android
             df['OS'] = df['Target'].astype(str).apply(lambda x: 'iOS' if 'io' in x.lower() else 'Android')
         
-        # Limpiamos todos los valores numéricos
         for col in df.columns:
             if col not in ['Date', 'Target', 'GEO', 'OS'] and df[col].dtype == 'object':
                 try:
@@ -247,28 +241,44 @@ with tab_targets:
     if df_targets is not None and not df_targets.empty:
         if 'Date' in df_targets.columns and 'Target' in df_targets.columns:
             
-            col_f1, col_f2 = st.columns(2)
+            # --- ZONA DE FILTROS REDISEÑADA ---
+            # Primera fila de filtros (Fecha, GEO, OS)
+            col_f1, col_f2, col_f3 = st.columns(3)
             min_t_date = df_targets['Date'].min()
             max_t_date = df_targets['Date'].max()
             
             with col_f1:
-                t_date_range = st.date_input("Filtrar Fechas (Targets)", [min_t_date, max_t_date], key="target_dates")
+                t_date_range = st.date_input("📅 Filtrar Fechas:", [min_t_date, max_t_date], key="target_dates")
                 
             with col_f2:
-                all_targets = sorted(df_targets['Target'].dropna().astype(str).unique())
-                t_selected = st.multiselect("🔍 Buscar/Filtrar Target específico:", options=all_targets, placeholder="Todos los targets...")
+                all_geos = sorted(df_targets['GEO'].dropna().astype(str).unique()) if 'GEO' in df_targets.columns else []
+                geo_selected = st.multiselect("🌍 Filtrar GEO:", options=all_geos, placeholder="Todos los países...")
 
+            with col_f3:
+                all_os = sorted(df_targets['OS'].dropna().astype(str).unique()) if 'OS' in df_targets.columns else []
+                os_selected = st.multiselect("📱 Filtrar OS:", options=all_os, placeholder="Todos los OS...")
+
+            # Segunda fila de filtros (Target específico - Ocupa todo el ancho)
+            all_targets = sorted(df_targets['Target'].dropna().astype(str).unique())
+            t_selected = st.multiselect("🔍 Buscar/Filtrar Target específico:", options=all_targets, placeholder="Todos los targets...")
+
+            # --- APLICAR FILTROS EN CASCADA ---
             mask_t = pd.Series(True, index=df_targets.index)
+            
             if len(t_date_range) == 2:
                 mask_t = mask_t & (df_targets['Date'] >= pd.to_datetime(t_date_range[0])) & (df_targets['Date'] <= pd.to_datetime(t_date_range[1]))
+            if geo_selected:
+                mask_t = mask_t & (df_targets['GEO'].astype(str).isin(geo_selected))
+            if os_selected:
+                mask_t = mask_t & (df_targets['OS'].astype(str).isin(os_selected))
             if t_selected:
                 mask_t = mask_t & (df_targets['Target'].astype(str).isin(t_selected))
                 
             df_t_filtered = df_targets[mask_t]
 
+            # --- PREPARAR LA TABLA ---
             numeric_columns = df_t_filtered.select_dtypes(include=['float64', 'int64']).columns.tolist()
             
-            # Incorporamos GEO y OS en la agrupación si existen
             group_cols = ['Date', 'Target']
             if 'GEO' in df_t_filtered.columns:
                 group_cols.insert(1, 'GEO')
@@ -278,7 +288,6 @@ with tab_targets:
             df_grouped = df_t_filtered.groupby(group_cols)[numeric_columns].sum().reset_index()
             df_grouped['Date'] = df_grouped['Date'].dt.strftime('%Y-%m-%d')
             
-            # Ordenamos
             sort_ascending = [False] + [True] * (len(group_cols) - 1)
             df_grouped = df_grouped.sort_values(by=group_cols, ascending=sort_ascending)
             

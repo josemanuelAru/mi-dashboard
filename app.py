@@ -285,39 +285,40 @@ with tab_targets:
                 
             df_grouped = df_t_filtered.groupby(group_cols)[numeric_columns].sum().reset_index()
             
-            # --- 🚀 GRÁFICAS CONDICIONALES A GEO Y OS ---
-            # Ahora solo pedimos que GEO y OS estén seleccionados (Target es opcional)
+            # --- 🚀 GRÁFICAS CONDICIONALES EN GRANDE Y APILADAS ---
             if geo_selected and os_selected:
                 st.divider()
                 st.subheader("📈 Rendimiento Diario de Targets Filtrados")
                 
-                col_sold = next((c for c in numeric_columns if 'sold' in c.lower() or 'visit' in c.lower()), None)
+                # Buscamos de forma inteligente las columnas
+                col_received = next((c for c in numeric_columns if 'received' in c.lower() or 'visit' in c.lower()), None)
                 col_cpm = next((c for c in numeric_columns if 'cpm' in c.lower()), None)
                 
-                c1, c2 = st.columns(2)
+                # 1. GRÁFICA DE RECEIVED TRAFFIC / VISITS (ARRIBA)
+                if col_received:
+                    df_chart_received = df_t_filtered.groupby(['Date', 'Target'])[col_received].sum().reset_index()
+                    fig_received = px.line(
+                        df_chart_received, x='Date', y=col_received, color='Target', markers=True,
+                        title=f"Evolución de {col_received}"
+                    )
+                    st.plotly_chart(fig_received, use_container_width=True) # Ocupa todo el ancho
+                else:
+                    st.warning("No se encontró columna para Received Traffic/Visits.")
                 
-                with c1:
-                    if col_sold:
-                        df_chart_sold = df_t_filtered.groupby(['Date', 'Target'])[col_sold].sum().reset_index()
-                        fig_sold = px.line(
-                            df_chart_sold, x='Date', y=col_sold, color='Target', markers=True,
-                            title=f"Evolución de {col_sold}"
-                        )
-                        st.plotly_chart(fig_sold, use_container_width=True)
-                    else:
-                        st.warning("No se encontró columna para Sold Visits.")
-                        
-                with c2:
-                    if col_cpm:
-                        df_chart_cpm = df_t_filtered.groupby(['Date', 'Target'])[col_cpm].mean().reset_index()
-                        fig_cpm = px.line(
-                            df_chart_cpm, x='Date', y=col_cpm, color='Target', markers=True,
-                            title=f"Evolución de {col_cpm} (Promedio)"
-                        )
-                        st.plotly_chart(fig_cpm, use_container_width=True)
-                    else:
-                        st.warning("No se encontró columna para CPM.")
-                        
+                # Espacio entre gráficas
+                st.write("")
+                
+                # 2. GRÁFICA DE CPM (DEBAJO)
+                if col_cpm:
+                    df_chart_cpm = df_t_filtered.groupby(['Date', 'Target'])[col_cpm].mean().reset_index()
+                    fig_cpm = px.line(
+                        df_chart_cpm, x='Date', y=col_cpm, color='Target', markers=True,
+                        title=f"Evolución de {col_cpm} (Promedio)"
+                    )
+                    st.plotly_chart(fig_cpm, use_container_width=True) # Ocupa todo el ancho
+                else:
+                    st.warning("No se encontró columna para CPM.")
+                    
                 st.divider()
             else:
                 st.info("💡 **Tip:** Selecciona un GEO y un OS en los filtros de arriba para desbloquear las gráficas de rendimiento visual.")

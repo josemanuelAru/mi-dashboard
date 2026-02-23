@@ -241,7 +241,7 @@ with tab_targets:
     if df_targets is not None and not df_targets.empty:
         if 'Date' in df_targets.columns and 'Target' in df_targets.columns:
             
-            # --- ZONA DE FILTROS REDISEÑADA ---
+            # --- ZONA DE FILTROS ---
             col_f1, col_f2, col_f3 = st.columns(3)
             min_t_date = df_targets['Date'].min()
             max_t_date = df_targets['Date'].max()
@@ -258,7 +258,7 @@ with tab_targets:
                 os_selected = st.multiselect("📱 Filtrar OS:", options=all_os, placeholder="Selecciona un sistema...")
 
             all_targets = sorted(df_targets['Target'].dropna().astype(str).unique())
-            t_selected = st.multiselect("🔍 Buscar/Filtrar Target específico:", options=all_targets, placeholder="Selecciona uno o varios targets...")
+            t_selected = st.multiselect("🔍 Buscar/Filtrar Target específico (Opcional):", options=all_targets, placeholder="Selecciona uno o varios targets...")
 
             # --- APLICAR FILTROS EN CASCADA ---
             mask_t = pd.Series(True, index=df_targets.index)
@@ -285,13 +285,12 @@ with tab_targets:
                 
             df_grouped = df_t_filtered.groupby(group_cols)[numeric_columns].sum().reset_index()
             
-            # --- 🚀 NUEVO: GRÁFICAS CONDICIONALES A LOS 3 FILTROS ---
-            # Solo se muestran si el usuario ha seleccionado algo en GEO, OS y Target
-            if geo_selected and os_selected and t_selected:
+            # --- 🚀 GRÁFICAS CONDICIONALES A GEO Y OS ---
+            # Ahora solo pedimos que GEO y OS estén seleccionados (Target es opcional)
+            if geo_selected and os_selected:
                 st.divider()
                 st.subheader("📈 Rendimiento Diario de Targets Filtrados")
                 
-                # Buscamos de forma inteligente las columnas de Sold y CPM
                 col_sold = next((c for c in numeric_columns if 'sold' in c.lower() or 'visit' in c.lower()), None)
                 col_cpm = next((c for c in numeric_columns if 'cpm' in c.lower()), None)
                 
@@ -299,7 +298,6 @@ with tab_targets:
                 
                 with c1:
                     if col_sold:
-                        # Agrupamos por fecha y Target para Sold Visits (Sumamos volumen)
                         df_chart_sold = df_t_filtered.groupby(['Date', 'Target'])[col_sold].sum().reset_index()
                         fig_sold = px.line(
                             df_chart_sold, x='Date', y=col_sold, color='Target', markers=True,
@@ -311,7 +309,6 @@ with tab_targets:
                         
                 with c2:
                     if col_cpm:
-                        # Agrupamos por fecha y Target para CPM (Media)
                         df_chart_cpm = df_t_filtered.groupby(['Date', 'Target'])[col_cpm].mean().reset_index()
                         fig_cpm = px.line(
                             df_chart_cpm, x='Date', y=col_cpm, color='Target', markers=True,
@@ -323,7 +320,7 @@ with tab_targets:
                         
                 st.divider()
             else:
-                st.info("💡 **Tip:** Selecciona un GEO, un OS y un Target en los filtros de arriba para desbloquear las gráficas de rendimiento visual.")
+                st.info("💡 **Tip:** Selecciona un GEO y un OS en los filtros de arriba para desbloquear las gráficas de rendimiento visual.")
 
             # Formateamos fecha para la tabla
             df_grouped['Date'] = pd.to_datetime(df_grouped['Date']).dt.strftime('%Y-%m-%d')

@@ -229,6 +229,23 @@ with tab_principal:
                 )
                 st.plotly_chart(fig_zp, use_container_width=True)
 
+        st.divider()
+
+        # --- NUEVA SECCIÓN: TABLA DE DATOS DEL DASHBOARD PRINCIPAL ---
+        st.subheader("📂 Datos Detallados")
+        
+        # Hacemos una copia para darle formato visual sin romper las gráficas
+        df_display = df_filtered.copy()
+        
+        # Formateamos la fecha para que se lea mejor (sin horas)
+        if 'Date' in df_display.columns:
+            df_display['Date'] = df_display['Date'].dt.strftime('%Y-%m-%d')
+            # Ordenamos para que lo más reciente salga primero
+            df_display = df_display.sort_values(by='Date', ascending=False)
+        
+        st.markdown(f"**Total de registros mostrados:** {len(df_display)}")
+        st.dataframe(df_display, use_container_width=True, hide_index=True)
+
     else:
         st.info("⏳ Cargando datos del Dashboard...")
 
@@ -305,7 +322,6 @@ with tab_targets:
                 else:
                     st.warning("No se encontró columna para Received Traffic/Visits.")
                 
-                # Espacio entre gráficas
                 st.write("")
                 
                 # 2. GRÁFICA DE CPM (DEBAJO)

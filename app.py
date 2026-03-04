@@ -293,7 +293,7 @@ st.title("📊 Dashboard Financiero & Operativo")
 tab_principal, tab_targets, tab_csv = st.tabs([
     "📈 Dashboard Principal", 
     "🎯 Análisis de Targets (Google Sheets)", 
-    "📁 Analizar CSV Local"
+    "📁 Analizar CSVs Locales"
 ])
 
 # ==============================================================================
@@ -411,54 +411,63 @@ with tab_targets:
         st.info("⏳ Cargando datos de Targets...")
 
 # ==============================================================================
-# 📁 PESTAÑA 3: ANÁLISIS DE CSV LOCAL
+# 📁 PESTAÑA 3: ANÁLISIS DE CSV LOCAL (SOPORTA MÚLTIPLES ARCHIVOS)
 # ==============================================================================
 with tab_csv:
-    st.subheader("📁 Analiza tu propio CSV (Pestaña 3)")
-    st.write("Sube tu archivo `.csv`. Aquí podrás filtrar y ver los datos totales en la tabla.")
+    st.subheader("📁 Analiza tus propios CSV (Pestaña 3)")
+    st.write("Puedes subir **varios archivos `.csv` a la vez**. El programa los unirá automáticamente y te mostrará el análisis conjunto.")
     
-    uploaded_file = st.file_uploader("Sube tu archivo CSV aquí", type=['csv'])
+    # Añadido accept_multiple_files=True
+    uploaded_files = st.file_uploader("Sube tus archivos CSV aquí", type=['csv'], accept_multiple_files=True)
     
-    if uploaded_file is not None:
+    if uploaded_files: # Si hay al menos un archivo
         try:
-            df_raw_csv = pd.read_csv(uploaded_file, sep=None, engine='python')
-            df_raw_csv.columns = df_raw_csv.columns.str.strip().str.replace('"', '')
+            dfs_csv = []
+            archivos_vacios = False
             
-            df_debug = df_raw_csv.copy()
-            df_cleaned_csv = clean_target_df(df_raw_csv)
-            
-            if df_cleaned_csv is not None and not df_cleaned_csv.empty:
-                if 'Target' in df_cleaned_csv.columns:
-                    st.success("✅ Archivo cargado correctamente. Puedes usar los filtros para explorar la tabla.")
-                    
-                    # 1. MOSTRAMOS LOS FILTROS Y LA TABLA FILTRADA (Gráficas OFF, Total Filtrado ON)
-                    render_targets_ui(df_cleaned_csv, "csv", show_charts=False, show_totals=True)
-                    
-                    # 2. MOSTRAMOS EL RESUMEN GLOBAL (SIN FILTROS DE LA PESTAÑA)
-                    st.divider()
-                    st.subheader("🌐 Resumen Global Acumulado (Sin Filtros)")
-                    st.write("Esta tabla inferior te muestra la suma de TODO el archivo que has subido, agrupado por Sistema y País. Los filtros de arriba no afectan a estos números.")
-                    
-                    if 'OS' in df_cleaned_csv.columns and 'GEO' in df_cleaned_csv.columns:
-                        num_cols = df_cleaned_csv.select_dtypes(include=['float64', 'int64']).columns.tolist()
-                        
-                        # Agrupamos los datos en crudo
-                        df_global_summary = df_cleaned_csv.groupby(['OS', 'GEO'], dropna=False)[num_cols].sum().reset_index()
-                        df_global_summary = df_global_summary.sort_values(by=['OS', 'GEO'])
-                        
-                        st.dataframe(df_global_summary, use_container_width=True, hide_index=True)
-                    else:
-                        st.info("No se han podido generar las columnas OS y GEO para mostrar el resumen global.")
-                        
+            # Recorremos todos los archivos subidos y los limpiamos
+            for file in uploaded_files:
+                df_raw_csv = pd.read_csv(file, sep=None, engine='python')
+                df_raw_csv.columns = df_raw_csv.columns.str.strip().str.replace('"', '')
+                
+                df_cleaned_csv = clean_target_df(df_raw_csv)
+                
+                if df_cleaned_csv is not None and not df_cleaned_csv.empty and 'Target' in df_cleaned_csv.columns:
+                    dfs_csv.append(df_cleaned_csv)
                 else:
-                    cols_found = df_cleaned_csv.attrs.get('original_cols', list(df_cleaned_csv.columns))
-                    st.error("⚠️ El CSV subido no tiene la columna 'Target'. Es necesaria para funcionar.")
-                    st.info(f"🕵️ **Columnas que he encontrado:** `{cols_found}`")
+                    archivos_vacios = True
+            
+            # Si hemos conseguido extraer datos válidos de al menos uno
+            if dfs_csv:
+                st.success(f"✅ Se han cargado y combinado correctamente {len(dfs_csv)} archivo(s).")
+                if archivos_vacios:
+                    st.warning("⚠️ Nota: Algún archivo se omitió porque estaba vacío o le faltaba la columna 'Target'.")
+                
+                # Unimos todos los dataframes en uno solo gigante
+                df_combined_csv = pd.concat(dfs_csv, ignore_index=True)
+                
+                # 1. MOSTRAMOS LOS FILTROS Y LA TABLA FILTRADA
+                render_targets_ui(df_combined_csv, "csv", show_charts=False, show_totals=True)
+                
+                # 2. MOSTRAMOS EL RESUMEN GLOBAL (ORDENADO POR GEO, OS)
+                st.divider()
+                st.subheader("🌐 Resumen Global Acumulado (Sin Filtros)")
+                st.write("Esta tabla inferior te muestra la suma de TODOS los archivos combinados, agrupado primero por **GEO** y después por **OS**.")
+                
+                if 'GEO' in df_combined_csv.columns and 'OS' in df_combined_csv.columns:
+                    num_cols = df_combined_csv.select_dtypes(include=['float64', 'int64']).columns.tolist()
+                    
+                    # Agrupamos primero por GEO, luego por OS
+                    df_global_summary = df_combined_csv.groupby(['GEO', 'OS'], dropna=False)[num_cols].sum().reset_index()
+                    df_global_summary = df_global_summary.sort_values(by=['GEO', 'OS'])
+                    
+                    st.dataframe(df_global_summary, use_container_width=True, hide_index=True)
+                else:
+                    st.info("No se han podido generar las columnas GEO y OS para mostrar el resumen global.")
             else:
-                st.warning("⚠️ El archivo subido se ha quedado vacío tras la limpieza.")
-                st.dataframe(df_debug.head(10), use_container_width=True)
+                st.error("❌ Ninguno de los archivos subidos contiene la columna 'Target' o datos válidos.")
                 
         except Exception as e:
-            st.error(f"❌ Error al leer el archivo CSV: {e}")
+            st.error(f"❌ Error al procesar los archivos CSV: {e}")
     else:
-        st.info("👆 Esperando a que subas un archivo .csv para mostrarte las opciones...")
+        st.info("👆 Esperando a que subas uno o varios archivos .csv para comenzar...")

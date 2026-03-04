@@ -29,7 +29,7 @@ def find_column_strict(columns, candidates):
                     return columns[i]
     return None
 
-# --- FUNCIÓN LIMPIEZA DE TARGETS (REUTILIZABLE) ---
+# --- FUNCIÓN LIMPIEZA DE TARGETS (REUTILIZABLE Y SEGURA) ---
 def clean_target_df(df):
     """Limpia cualquier dataframe con la lógica de Zeropark"""
     original_cols = list(df.columns)
@@ -48,9 +48,11 @@ def clean_target_df(df):
         df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
         df = df.dropna(subset=['Date']) 
 
-    # ✂️ EXTRAER GEO Y OS DEL TARGET
+    # ✂️ EXTRAER GEO Y OS DEL TARGET (AHORA CON PROTECCIÓN N/A)
     if 'Target' in df.columns:
-        df['GEO'] = df['Target'].astype(str).str.extract(r'-(.{2})', expand=False).str.upper()
+        # Extraemos las letras tras el guión. Si no hay guión, rellenamos con 'N/A' para que la columna no se borre.
+        df['GEO'] = df['Target'].astype(str).str.extract(r'-(.{2})', expand=False).str.upper().fillna('N/A')
+        # OS: iOS si tiene "io", si no Android
         df['OS'] = df['Target'].astype(str).apply(lambda x: 'iOS' if 'io' in x.lower() else 'Android')
     
     for col in df.columns:
@@ -66,27 +68,23 @@ def clean_target_df(df):
 
 # --- MOTOR DE INTERFAZ PARA TARGETS (PLANTILLA INDEPENDIENTE) ---
 def render_targets_ui(df_targets, key_prefix):
-    """
-    Genera los filtros, gráficas y tabla. 
-    key_prefix hace que los filtros sean 100% independientes entre pestañas.
-    """
+    """Genera los filtros, gráficas y tabla. 100% independiente por pestaña."""
     col_f1, col_f2, col_f3 = st.columns(3)
     min_t_date = df_targets['Date'].min()
     max_t_date = df_targets['Date'].max()
     
     with col_f1:
-        # El 'key' asegura que este filtro no se mezcle con el de otras pestañas
         t_date_range = st.date_input("📅 Filtrar Fechas:", [min_t_date, max_t_date], key=f"{key_prefix}_dates")
         
     with col_f2:
-        all_geos = sorted(df_targets['GEO'].dropna().astype(str).unique()) if 'GEO' in df_targets.columns else []
+        all_geos = sorted(df_targets['GEO'].astype(str).unique()) if 'GEO' in df_targets.columns else []
         geo_selected = st.multiselect("🌍 Filtrar GEO:", options=all_geos, placeholder="Selecciona un país...", key=f"{key_prefix}_geo")
 
     with col_f3:
-        all_os = sorted(df_targets['OS'].dropna().astype(str).unique()) if 'OS' in df_targets.columns else []
+        all_os = sorted(df_targets['OS'].astype(str).unique()) if 'OS' in df_targets.columns else []
         os_selected = st.multiselect("📱 Filtrar OS:", options=all_os, placeholder="Selecciona un sistema...", key=f"{key_prefix}_os")
 
-    all_targets = sorted(df_targets['Target'].dropna().astype(str).unique())
+    all_targets = sorted(df_targets['Target'].astype(str).unique())
     t_selected = st.multiselect("🔍 Buscar/Filtrar Target específico (Opcional):", options=all_targets, placeholder="Selecciona uno o varios targets...", key=f"{key_prefix}_target")
 
     mask_t = pd.Series(True, index=df_targets.index)
@@ -104,13 +102,15 @@ def render_targets_ui(df_targets, key_prefix):
 
     numeric_columns = df_t_filtered.select_dtypes(include=['float64', 'int64']).columns.tolist()
     
-    group_cols = ['Date', 'Target']
+    group_cols = ['Date']
     if 'GEO' in df_t_filtered.columns:
-        group_cols.insert(1, 'GEO')
+        group_cols.append('GEO')
     if 'OS' in df_t_filtered.columns:
-        group_cols.insert(2, 'OS')
+        group_cols.append('OS')
+    group_cols.append('Target')
         
-    df_grouped = df_t_filtered.groupby(group_cols)[numeric_columns].sum().reset_index()
+    # Usamos dropna=False por si algún dato es extraño, así no borra la fila
+    df_grouped = df_t_filtered.groupby(group_cols, dropna=False)[numeric_columns].sum().reset_index()
     
     if geo_selected and os_selected:
         st.divider()
@@ -120,7 +120,7 @@ def render_targets_ui(df_targets, key_prefix):
         col_cpm = next((c for c in numeric_columns if 'cpm' in c.lower()), None)
         
         if col_received:
-            df_chart_received = df_t_filtered.groupby(['Date', 'Target'])[col_received].sum().reset_index()
+            df_chart_received = df_t_filtered.groupby(['Date', 'Target'], dropna=False)[col_received].sum().reset_index()
             fig_received = px.line(
                 df_chart_received, x='Date', y=col_received, color='Target', markers=True,
                 title=f"Evolución de {col_received}"
@@ -132,7 +132,7 @@ def render_targets_ui(df_targets, key_prefix):
         st.write("")
         
         if col_cpm:
-            df_chart_cpm = df_t_filtered.groupby(['Date', 'Target'])[col_cpm].mean().reset_index()
+            df_chart_cpm = df_t_filtered.groupby(['Date', 'Target'], dropna=False)[col_cpm].mean().reset_index()
             fig_cpm = px.line(
                 df_chart_cpm, x='Date', y=col_cpm, color='Target', markers=True,
                 title=f"Evolución de {col_cpm} (Promedio)"
@@ -347,7 +347,7 @@ with tab_targets:
     
     if df_targets is not None and not df_targets.empty:
         if 'Date' in df_targets.columns and 'Target' in df_targets.columns:
-            # Aquí usamos el prefijo "zp" para los filtros. Son únicos de esta pestaña.
+            # Filtros con llave "zp"
             render_targets_ui(df_targets, "zp")
         else:
             cols_found = df_targets.attrs.get('original_cols', list(df_targets.columns))
@@ -361,34 +361,36 @@ with tab_targets:
 # ==============================================================================
 with tab_csv:
     st.subheader("📁 Analiza tu propio CSV (Pestaña 3)")
-    st.write("Sube tu archivo `.csv`. Los filtros de esta pestaña son 100% independientes de la pestaña 2.")
+    st.write("Sube tu archivo `.csv`. ¡Una vez lo subas, aparecerán mágicamente todos los filtros y gráficas idénticos a la pestaña 2!")
     
     uploaded_file = st.file_uploader("Sube tu archivo CSV aquí", type=['csv'])
     
     if uploaded_file is not None:
         try:
-            # Activamos detección de separadores por si es un CSV europeo (con punto y coma)
+            # 1. Leer CSV
             df_raw_csv = pd.read_csv(uploaded_file, sep=None, engine='python')
             df_raw_csv.columns = df_raw_csv.columns.str.strip().str.replace('"', '')
             
             df_debug = df_raw_csv.copy()
+            
+            # 2. Limpiarlo con la función
             df_cleaned_csv = clean_target_df(df_raw_csv)
             
+            # 3. Dibujar UI si todo está OK
             if df_cleaned_csv is not None and not df_cleaned_csv.empty:
                 if 'Date' in df_cleaned_csv.columns and 'Target' in df_cleaned_csv.columns:
-                    st.success("✅ Archivo cargado y procesado correctamente.")
-                    # Aquí usamos el prefijo "csv". Esto garantiza que no compartan filtros con "zp".
+                    st.success("✅ Archivo cargado y procesado correctamente. ¡Aquí tienes tus datos!")
+                    # Filtros con llave "csv"
                     render_targets_ui(df_cleaned_csv, "csv")
                 else:
                     cols_found = df_cleaned_csv.attrs.get('original_cols', list(df_cleaned_csv.columns))
-                    st.error("⚠️ El CSV subido no tiene las columnas 'Date' o 'Target'.")
-                    st.info(f"🕵️ **Columnas detectadas:** `{cols_found}`")
+                    st.error("⚠️ El CSV subido no tiene las columnas necesarias ('Date' o 'Target').")
+                    st.info(f"🕵️ **Columnas que he encontrado:** `{cols_found}`")
             else:
-                st.warning("⚠️ El archivo subido se ha quedado vacío tras intentar procesar las fechas.")
-                st.write("🕵️ **MODO DETECTIVE:** Así es como el programa está viendo tu archivo en bruto. Verifica si el formato de fecha es extraño.")
-                st.dataframe(df_debug.head(15), use_container_width=True)
+                st.warning("⚠️ El archivo subido se ha quedado vacío tras la limpieza. Es posible que el formato de fecha no se reconozca.")
+                st.dataframe(df_debug.head(10), use_container_width=True)
                 
         except Exception as e:
             st.error(f"❌ Error al leer el archivo CSV: {e}")
     else:
-        st.info("👆 Esperando a que subas un archivo .csv...")
+        st.info("👆 Esperando a que subas un archivo .csv para mostrarte las opciones...")

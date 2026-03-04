@@ -72,7 +72,7 @@ def clean_target_df(df):
 
 # --- MOTOR DE INTERFAZ PARA TARGETS (CON INTERRUPTORES) ---
 def render_targets_ui(df_targets, key_prefix, show_charts=True, show_totals=False):
-    """Genera los filtros y tabla. Incluye parámetros para ocultar gráficas y mostrar totales."""
+    """Genera los filtros y tabla. Incluye parámetros para ocultar gráficas y mostrar totales en negrita."""
     has_date = 'Date' in df_targets.columns
     
     col_f1, col_f2, col_f3 = st.columns(3)
@@ -177,30 +177,36 @@ def render_targets_ui(df_targets, key_prefix, show_charts=True, show_totals=Fals
         
     df_grouped = df_grouped.sort_values(by=group_cols, ascending=sort_ascending)
     
-    # --- 🚀 NUEVO: FILA DE TOTALES (SÓLO SI ESTÁ ACTIVADO Y CON FILTROS PUESTOS) ---
+    # --- 🚀 FILA DE TOTALES EN NEGRITA ---
     if show_totals and geo_selected and os_selected:
         totals_dict = {}
         for col in df_grouped.columns:
             if col in numeric_columns:
                 totals_dict[col] = df_grouped[col].sum()
             else:
-                totals_dict[col] = "" # Dejamos vacío el texto
+                totals_dict[col] = "" 
                 
-        # Ponemos la palabra TOTAL en la primera columna para que se vea claro
         first_col = df_grouped.columns[0]
         totals_dict[first_col] = "📌 TOTAL"
         
-        # Añadimos esta fila de totales al final del dataframe
         df_totals = pd.DataFrame([totals_dict])
         df_grouped = pd.concat([df_grouped, df_totals], ignore_index=True)
-        
-        # Calculamos filas reales sin contar la de totales
         num_rows = len(df_grouped) - 1
+        
+        def style_total_row(row):
+            if row.iloc[0] == "📌 TOTAL":
+                return ['font-weight: bold; background-color: rgba(255, 255, 0, 0.1);'] * len(row)
+            return [''] * len(row)
+            
+        styled_df = df_grouped.style.apply(style_total_row, axis=1)
+        
+        st.markdown(f"**Total de filas mostradas (con filtros):** {num_rows}")
+        st.dataframe(styled_df, use_container_width=True, height=600, hide_index=True)
+    
     else:
         num_rows = len(df_grouped)
-    
-    st.markdown(f"**Total de filas mostradas:** {num_rows}")
-    st.dataframe(df_grouped, use_container_width=True, height=600, hide_index=True)
+        st.markdown(f"**Total de filas mostradas (con filtros):** {num_rows}")
+        st.dataframe(df_grouped, use_container_width=True, height=600, hide_index=True)
 
 
 # --- CARGA DEL DASHBOARD PRINCIPAL (AOS/IOS) ---
@@ -424,8 +430,26 @@ with tab_csv:
             if df_cleaned_csv is not None and not df_cleaned_csv.empty:
                 if 'Target' in df_cleaned_csv.columns:
                     st.success("✅ Archivo cargado correctamente. Puedes usar los filtros para explorar la tabla.")
-                    # AQUÍ APAGAMOS LAS GRÁFICAS (show_charts=False) Y ENCENDEMOS LOS TOTALES (show_totals=True)
+                    
+                    # 1. MOSTRAMOS LOS FILTROS Y LA TABLA FILTRADA (Gráficas OFF, Total Filtrado ON)
                     render_targets_ui(df_cleaned_csv, "csv", show_charts=False, show_totals=True)
+                    
+                    # 2. MOSTRAMOS EL RESUMEN GLOBAL (SIN FILTROS DE LA PESTAÑA)
+                    st.divider()
+                    st.subheader("🌐 Resumen Global Acumulado (Sin Filtros)")
+                    st.write("Esta tabla inferior te muestra la suma de TODO el archivo que has subido, agrupado por Sistema y País. Los filtros de arriba no afectan a estos números.")
+                    
+                    if 'OS' in df_cleaned_csv.columns and 'GEO' in df_cleaned_csv.columns:
+                        num_cols = df_cleaned_csv.select_dtypes(include=['float64', 'int64']).columns.tolist()
+                        
+                        # Agrupamos los datos en crudo
+                        df_global_summary = df_cleaned_csv.groupby(['OS', 'GEO'], dropna=False)[num_cols].sum().reset_index()
+                        df_global_summary = df_global_summary.sort_values(by=['OS', 'GEO'])
+                        
+                        st.dataframe(df_global_summary, use_container_width=True, hide_index=True)
+                    else:
+                        st.info("No se han podido generar las columnas OS y GEO para mostrar el resumen global.")
+                        
                 else:
                     cols_found = df_cleaned_csv.attrs.get('original_cols', list(df_cleaned_csv.columns))
                     st.error("⚠️ El CSV subido no tiene la columna 'Target'. Es necesaria para funcionar.")

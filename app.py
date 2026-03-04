@@ -17,7 +17,7 @@ GID_TARGETS = "0"            # Datos pestaña Zeropark
 def get_url(gid):
     return f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid={gid}"
 
-# --- FUNCIÓN DE BÚSQUEDA EXACTA (MEJORADA PARA NO CONFUNDIR "INVALIDATED" CON "DATE") ---
+# --- FUNCIÓN DE BÚSQUEDA EXACTA ---
 def find_column_strict(columns, candidates):
     cols_clean = [str(c).lower().strip() for c in columns]
     # 1. Búsqueda exacta primero
@@ -26,17 +26,16 @@ def find_column_strict(columns, candidates):
         if cand in cols_clean:
             return columns[cols_clean.index(cand)]
             
-    # 2. Búsqueda inteligente (que sea una palabra suelta, no parte de otra palabra)
+    # 2. Búsqueda inteligente (que sea una palabra suelta)
     for cand in candidates:
         cand = cand.lower().strip()
         if len(cand) > 2:
             for i, col in enumerate(cols_clean):
-                # Esto asegura que "date" no haga match con "invalidated"
                 if re.search(rf'\b{re.escape(cand)}\b', col):
                     return columns[i]
     return None
 
-# --- FUNCIÓN LIMPIEZA DE TARGETS (SOPORTA CSV SIN FECHAS) ---
+# --- FUNCIÓN LIMPIEZA DE TARGETS ---
 def clean_target_df(df):
     """Limpia cualquier dataframe con la lógica de Zeropark"""
     original_cols = list(df.columns)
@@ -51,7 +50,6 @@ def clean_target_df(df):
     if col_mapping:
         df.rename(columns=col_mapping, inplace=True)
 
-    # Si hay fecha, la formatea y borra filas vacías. Si no hay fecha, no hace nada (no borra datos).
     if 'Date' in df.columns:
         df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
         df = df.dropna(subset=['Date']) 
@@ -72,9 +70,9 @@ def clean_target_df(df):
     df.attrs['original_cols'] = original_cols
     return df
 
-# --- MOTOR DE INTERFAZ PARA TARGETS (ADAPTATIVO CON O SIN FECHAS) ---
-def render_targets_ui(df_targets, key_prefix):
-    """Genera los filtros, gráficas y tabla. Es 100% independiente y se adapta si no hay fecha."""
+# --- MOTOR DE INTERFAZ PARA TARGETS (CON INTERRUPTOR DE GRÁFICAS) ---
+def render_targets_ui(df_targets, key_prefix, show_charts=True):
+    """Genera los filtros y tabla. Si show_charts es False, oculta las gráficas visuales."""
     has_date = 'Date' in df_targets.columns
     
     col_f1, col_f2, col_f3 = st.columns(3)
@@ -85,7 +83,7 @@ def render_targets_ui(df_targets, key_prefix):
             max_t_date = df_targets['Date'].max()
             t_date_range = st.date_input("📅 Filtrar Fechas:", [min_t_date, max_t_date], key=f"{key_prefix}_dates")
         else:
-            st.info("📅 CSV Total (Sin desglose de fechas)")
+            st.info("📅 CSV Total (Sin fechas)")
             t_date_range = []
             
     with col_f2:
@@ -97,7 +95,7 @@ def render_targets_ui(df_targets, key_prefix):
         os_selected = st.multiselect("📱 Filtrar OS:", options=all_os, placeholder="Selecciona un sistema...", key=f"{key_prefix}_os")
 
     all_targets = sorted(df_targets['Target'].astype(str).unique())
-    t_selected = st.multiselect("🔍 Buscar/Filtrar Target específico (Opcional):", options=all_targets, placeholder="Selecciona uno o varios targets...", key=f"{key_prefix}_target")
+    t_selected = st.multiselect("🔍 Buscar/Filtrar Target específico:", options=all_targets, placeholder="Selecciona uno o varios targets...", key=f"{key_prefix}_target")
 
     # --- APLICAR FILTROS ---
     mask_t = pd.Series(True, index=df_targets.index)
@@ -115,7 +113,7 @@ def render_targets_ui(df_targets, key_prefix):
 
     numeric_columns = df_t_filtered.select_dtypes(include=['float64', 'int64']).columns.tolist()
     
-    # --- AGRUPACIÓN INTELIGENTE ---
+    # --- AGRUPACIÓN ---
     group_cols = []
     if has_date:
         group_cols.append('Date')
@@ -127,47 +125,49 @@ def render_targets_ui(df_targets, key_prefix):
         
     df_grouped = df_t_filtered.groupby(group_cols, dropna=False)[numeric_columns].sum().reset_index()
     
-    # --- 🚀 GRÁFICAS ADAPTATIVAS ---
-    if geo_selected and os_selected:
-        st.divider()
-        st.subheader("📈 Rendimiento de Targets Filtrados")
-        
-        col_received = next((c for c in numeric_columns if 'received' in c.lower() or 'visit' in c.lower()), None)
-        col_cpm = next((c for c in numeric_columns if 'cpm' in c.lower()), None)
-        
-        # 1. TRÁFICO
-        if col_received:
-            if has_date:
-                df_chart_received = df_t_filtered.groupby(['Date', 'Target'], dropna=False)[col_received].sum().reset_index()
-                fig_received = px.line(df_chart_received, x='Date', y=col_received, color='Target', markers=True, title=f"Evolución de {col_received}")
-            else:
-                # Si no hay fecha, hacemos gráfica de barras con los totales
-                df_chart_received = df_t_filtered.groupby(['Target'], dropna=False)[col_received].sum().reset_index()
-                fig_received = px.bar(df_chart_received, x='Target', y=col_received, color='Target', title=f"Total acumulado de {col_received}")
+    # --- 🚀 GRÁFICAS (SÓLO SI ESTÁN ACTIVADAS) ---
+    if show_charts:
+        if geo_selected and os_selected:
+            st.divider()
+            st.subheader("📈 Rendimiento de Targets Filtrados")
             
-            st.plotly_chart(fig_received, use_container_width=True) 
-        else:
-            st.warning("No se encontró columna para Received Traffic/Visits.")
-        
-        st.write("")
-        
-        # 2. CPM
-        if col_cpm:
-            if has_date:
-                df_chart_cpm = df_t_filtered.groupby(['Date', 'Target'], dropna=False)[col_cpm].mean().reset_index()
-                fig_cpm = px.line(df_chart_cpm, x='Date', y=col_cpm, color='Target', markers=True, title=f"Evolución de {col_cpm} (Promedio)")
-            else:
-                # Si no hay fecha, barras comparativas de CPM promedio
-                df_chart_cpm = df_t_filtered.groupby(['Target'], dropna=False)[col_cpm].mean().reset_index()
-                fig_cpm = px.bar(df_chart_cpm, x='Target', y=col_cpm, color='Target', title=f"Comparativa de {col_cpm} (Promedio)")
+            col_received = next((c for c in numeric_columns if 'received' in c.lower() or 'visit' in c.lower()), None)
+            col_cpm = next((c for c in numeric_columns if 'cpm' in c.lower()), None)
+            
+            # 1. TRÁFICO
+            if col_received:
+                if has_date:
+                    df_chart_received = df_t_filtered.groupby(['Date', 'Target'], dropna=False)[col_received].sum().reset_index()
+                    fig_received = px.line(df_chart_received, x='Date', y=col_received, color='Target', markers=True, title=f"Evolución de {col_received}")
+                else:
+                    df_chart_received = df_t_filtered.groupby(['Target'], dropna=False)[col_received].sum().reset_index()
+                    fig_received = px.bar(df_chart_received, x='Target', y=col_received, color='Target', title=f"Total acumulado de {col_received}")
                 
-            st.plotly_chart(fig_cpm, use_container_width=True)
-        else:
-            st.warning("No se encontró columna para CPM.")
+                st.plotly_chart(fig_received, use_container_width=True) 
+            else:
+                st.warning("No se encontró columna para Received Traffic/Visits.")
             
-        st.divider()
+            st.write("")
+            
+            # 2. CPM
+            if col_cpm:
+                if has_date:
+                    df_chart_cpm = df_t_filtered.groupby(['Date', 'Target'], dropna=False)[col_cpm].mean().reset_index()
+                    fig_cpm = px.line(df_chart_cpm, x='Date', y=col_cpm, color='Target', markers=True, title=f"Evolución de {col_cpm} (Promedio)")
+                else:
+                    df_chart_cpm = df_t_filtered.groupby(['Target'], dropna=False)[col_cpm].mean().reset_index()
+                    fig_cpm = px.bar(df_chart_cpm, x='Target', y=col_cpm, color='Target', title=f"Comparativa de {col_cpm} (Promedio)")
+                    
+                st.plotly_chart(fig_cpm, use_container_width=True)
+            else:
+                st.warning("No se encontró columna para CPM.")
+                
+            st.divider()
+        else:
+            st.info("💡 **Tip:** Selecciona un GEO y un OS en los filtros de arriba para desbloquear las gráficas.")
     else:
-        st.info("💡 **Tip:** Selecciona un GEO y un OS en los filtros de arriba para desbloquear las gráficas.")
+        # Si las gráficas están desactivadas (Pestaña 3), solo ponemos un divisor estético antes de la tabla
+        st.divider()
 
     # Formato de la tabla
     if has_date:
@@ -263,7 +263,7 @@ df_targets = load_targets_data()
 # --- INTERFAZ ---
 st.title("📊 Dashboard Financiero & Operativo")
 
-# 🌟 AQUÍ SE CREAN LAS TRES PESTAÑAS
+# 🌟 PESTAÑAS
 tab_principal, tab_targets, tab_csv = st.tabs([
     "📈 Dashboard Principal", 
     "🎯 Análisis de Targets (Google Sheets)", 
@@ -375,9 +375,9 @@ with tab_targets:
     st.subheader("🎯 Rendimiento desde Google Sheets (Pestaña 2)")
     
     if df_targets is not None and not df_targets.empty:
-        # Pestaña 2 (Google sheets) exige tener el Target, la fecha ya no es un bloqueante
         if 'Target' in df_targets.columns:
-            render_targets_ui(df_targets, "zp")
+            # show_charts=True por defecto para esta pestaña
+            render_targets_ui(df_targets, "zp", show_charts=True)
         else:
             cols_found = df_targets.attrs.get('original_cols', list(df_targets.columns))
             st.error("⚠️ No encuentro la columna 'Target' en Google Sheets.")
@@ -390,7 +390,7 @@ with tab_targets:
 # ==============================================================================
 with tab_csv:
     st.subheader("📁 Analiza tu propio CSV (Pestaña 3)")
-    st.write("Sube tu archivo `.csv`. ¡Una vez lo subas, aparecerán los filtros y gráficas (Líneas si tiene fecha, Barras si es un total)!")
+    st.write("Sube tu archivo `.csv`. Aquí podrás filtrar y ver los datos en la tabla (sin gráficas).")
     
     uploaded_file = st.file_uploader("Sube tu archivo CSV aquí", type=['csv'])
     
@@ -403,10 +403,10 @@ with tab_csv:
             df_cleaned_csv = clean_target_df(df_raw_csv)
             
             if df_cleaned_csv is not None and not df_cleaned_csv.empty:
-                # Ya no exigimos 'Date', solo 'Target'
                 if 'Target' in df_cleaned_csv.columns:
-                    st.success("✅ Archivo cargado y procesado correctamente. ¡Aquí tienes tus datos!")
-                    render_targets_ui(df_cleaned_csv, "csv")
+                    st.success("✅ Archivo cargado correctamente. Puedes usar los filtros para explorar la tabla.")
+                    # AQUÍ APAGAMOS LAS GRÁFICAS PASANDO show_charts=False
+                    render_targets_ui(df_cleaned_csv, "csv", show_charts=False)
                 else:
                     cols_found = df_cleaned_csv.attrs.get('original_cols', list(df_cleaned_csv.columns))
                     st.error("⚠️ El CSV subido no tiene la columna 'Target'. Es necesaria para funcionar.")

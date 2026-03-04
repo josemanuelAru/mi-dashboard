@@ -358,36 +358,42 @@ with tab_targets:
         st.info("⏳ Cargando datos de Targets...")
 
 # ==============================================================================
-# 📁 PESTAÑA 3: ANÁLISIS DE CSV LOCAL (¡NUEVO!)
+# 📁 PESTAÑA 3: ANÁLISIS DE CSV LOCAL
 # ==============================================================================
 with tab_csv:
     st.subheader("📁 Analizar tu propio archivo CSV")
-    st.write("Sube un archivo `.csv` (por ejemplo, exportado directamente de tu red) y aplícale los mismos filtros y gráficas inteligentes.")
+    st.write("Sube un archivo `.csv` y aplícale los mismos filtros y gráficas inteligentes.")
     
     uploaded_file = st.file_uploader("Sube tu archivo CSV aquí", type=['csv'])
     
     if uploaded_file is not None:
         try:
-            # Leemos el archivo subido
-            df_raw_csv = pd.read_csv(uploaded_file)
+            # 1. AUTO-DETECCIÓN DE SEPARADOR: sep=None y engine='python'
+            # Esto evita el error de las comas vs puntos y comas (;)
+            df_raw_csv = pd.read_csv(uploaded_file, sep=None, engine='python')
             df_raw_csv.columns = df_raw_csv.columns.str.strip().str.replace('"', '')
             
-            # Lo pasamos por nuestra función limpiadora
+            # Guardamos una copia exacta para el "Modo Detective"
+            df_debug = df_raw_csv.copy()
+            
+            # Limpiamos usando nuestra función central
             df_cleaned_csv = clean_target_df(df_raw_csv)
             
             if df_cleaned_csv is not None and not df_cleaned_csv.empty:
                 if 'Date' in df_cleaned_csv.columns and 'Target' in df_cleaned_csv.columns:
                     st.success("✅ Archivo cargado y procesado correctamente.")
-                    # Llamamos al mismo motor visual, pero con ID "csv" para que no se pise con los otros filtros
                     render_targets_ui(df_cleaned_csv, "csv")
                 else:
                     cols_found = df_cleaned_csv.attrs.get('original_cols', list(df_cleaned_csv.columns))
-                    st.error("⚠️ El CSV subido no tiene el formato correcto (Falta 'Date' o 'Target').")
-                    st.info(f"🕵️ **Columnas detectadas en tu archivo:** \n\n `{cols_found}`")
+                    st.error("⚠️ El CSV subido no tiene las columnas 'Date' o 'Target'.")
+                    st.info(f"🕵️ **Columnas detectadas:** `{cols_found}`")
             else:
-                st.warning("⚠️ El archivo subido parece estar vacío tras la limpieza.")
+                st.warning("⚠️ El archivo subido se ha quedado vacío tras intentar procesar las fechas.")
+                st.write("🕵️ **MODO DETECTIVE:** Así es como el programa está viendo tu archivo en bruto antes de limpiarlo. ¿Ves algo raro en la columna de Fechas o están los títulos en la fila equivocada?")
+                # Mostramos la tabla en bruto para descubrir el error visualmente
+                st.dataframe(df_debug.head(15), use_container_width=True)
                 
         except Exception as e:
-            st.error(f"❌ Error al leer el archivo CSV: {e}")
+            st.error(f"❌ Error crítico al leer el archivo CSV: {e}")
     else:
         st.info("👆 Esperando a que subas un archivo .csv...")

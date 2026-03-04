@@ -26,7 +26,7 @@ def find_column_strict(columns, candidates):
         if cand in cols_clean:
             return columns[cols_clean.index(cand)]
             
-    # 2. Búsqueda inteligente (que sea una palabra suelta)
+    # 2. Búsqueda inteligente
     for cand in candidates:
         cand = cand.lower().strip()
         if len(cand) > 2:
@@ -70,9 +70,9 @@ def clean_target_df(df):
     df.attrs['original_cols'] = original_cols
     return df
 
-# --- MOTOR DE INTERFAZ PARA TARGETS (CON INTERRUPTOR DE GRÁFICAS) ---
-def render_targets_ui(df_targets, key_prefix, show_charts=True):
-    """Genera los filtros y tabla. Si show_charts es False, oculta las gráficas visuales."""
+# --- MOTOR DE INTERFAZ PARA TARGETS (CON INTERRUPTORES) ---
+def render_targets_ui(df_targets, key_prefix, show_charts=True, show_totals=False):
+    """Genera los filtros y tabla. Incluye parámetros para ocultar gráficas y mostrar totales."""
     has_date = 'Date' in df_targets.columns
     
     col_f1, col_f2, col_f3 = st.columns(3)
@@ -166,10 +166,9 @@ def render_targets_ui(df_targets, key_prefix, show_charts=True):
         else:
             st.info("💡 **Tip:** Selecciona un GEO y un OS en los filtros de arriba para desbloquear las gráficas.")
     else:
-        # Si las gráficas están desactivadas (Pestaña 3), solo ponemos un divisor estético antes de la tabla
         st.divider()
 
-    # Formato de la tabla
+    # Formato y Orden de la tabla
     if has_date:
         df_grouped['Date'] = pd.to_datetime(df_grouped['Date']).dt.strftime('%Y-%m-%d')
         sort_ascending = [False] + [True] * (len(group_cols) - 1)
@@ -178,7 +177,29 @@ def render_targets_ui(df_targets, key_prefix, show_charts=True):
         
     df_grouped = df_grouped.sort_values(by=group_cols, ascending=sort_ascending)
     
-    st.markdown(f"**Total de filas mostradas:** {len(df_grouped)}")
+    # --- 🚀 NUEVO: FILA DE TOTALES (SÓLO SI ESTÁ ACTIVADO Y CON FILTROS PUESTOS) ---
+    if show_totals and geo_selected and os_selected:
+        totals_dict = {}
+        for col in df_grouped.columns:
+            if col in numeric_columns:
+                totals_dict[col] = df_grouped[col].sum()
+            else:
+                totals_dict[col] = "" # Dejamos vacío el texto
+                
+        # Ponemos la palabra TOTAL en la primera columna para que se vea claro
+        first_col = df_grouped.columns[0]
+        totals_dict[first_col] = "📌 TOTAL"
+        
+        # Añadimos esta fila de totales al final del dataframe
+        df_totals = pd.DataFrame([totals_dict])
+        df_grouped = pd.concat([df_grouped, df_totals], ignore_index=True)
+        
+        # Calculamos filas reales sin contar la de totales
+        num_rows = len(df_grouped) - 1
+    else:
+        num_rows = len(df_grouped)
+    
+    st.markdown(f"**Total de filas mostradas:** {num_rows}")
     st.dataframe(df_grouped, use_container_width=True, height=600, hide_index=True)
 
 
@@ -263,7 +284,6 @@ df_targets = load_targets_data()
 # --- INTERFAZ ---
 st.title("📊 Dashboard Financiero & Operativo")
 
-# 🌟 PESTAÑAS
 tab_principal, tab_targets, tab_csv = st.tabs([
     "📈 Dashboard Principal", 
     "🎯 Análisis de Targets (Google Sheets)", 
@@ -376,8 +396,7 @@ with tab_targets:
     
     if df_targets is not None and not df_targets.empty:
         if 'Target' in df_targets.columns:
-            # show_charts=True por defecto para esta pestaña
-            render_targets_ui(df_targets, "zp", show_charts=True)
+            render_targets_ui(df_targets, "zp", show_charts=True, show_totals=False)
         else:
             cols_found = df_targets.attrs.get('original_cols', list(df_targets.columns))
             st.error("⚠️ No encuentro la columna 'Target' en Google Sheets.")
@@ -390,7 +409,7 @@ with tab_targets:
 # ==============================================================================
 with tab_csv:
     st.subheader("📁 Analiza tu propio CSV (Pestaña 3)")
-    st.write("Sube tu archivo `.csv`. Aquí podrás filtrar y ver los datos en la tabla (sin gráficas).")
+    st.write("Sube tu archivo `.csv`. Aquí podrás filtrar y ver los datos totales en la tabla.")
     
     uploaded_file = st.file_uploader("Sube tu archivo CSV aquí", type=['csv'])
     
@@ -405,8 +424,8 @@ with tab_csv:
             if df_cleaned_csv is not None and not df_cleaned_csv.empty:
                 if 'Target' in df_cleaned_csv.columns:
                     st.success("✅ Archivo cargado correctamente. Puedes usar los filtros para explorar la tabla.")
-                    # AQUÍ APAGAMOS LAS GRÁFICAS PASANDO show_charts=False
-                    render_targets_ui(df_cleaned_csv, "csv", show_charts=False)
+                    # AQUÍ APAGAMOS LAS GRÁFICAS (show_charts=False) Y ENCENDEMOS LOS TOTALES (show_totals=True)
+                    render_targets_ui(df_cleaned_csv, "csv", show_charts=False, show_totals=True)
                 else:
                     cols_found = df_cleaned_csv.attrs.get('original_cols', list(df_cleaned_csv.columns))
                     st.error("⚠️ El CSV subido no tiene la columna 'Target'. Es necesaria para funcionar.")

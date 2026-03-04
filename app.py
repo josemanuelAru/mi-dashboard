@@ -29,12 +29,136 @@ def find_column_strict(columns, candidates):
                     return columns[i]
     return None
 
+# --- FUNCIÓN LIMPIEZA DE TARGETS (REUTILIZABLE) ---
+def clean_target_df(df):
+    """Limpia cualquier dataframe (sea de URL o subido por CSV) con la lógica de Zeropark"""
+    original_cols = list(df.columns)
+    col_mapping = {}
+    
+    c_date = find_column_strict(df.columns, ['date', 'day', 'fecha', 'v', 'time', 'interval', 'period'])
+    c_target = find_column_strict(df.columns, ['target', 'id target', 'subid', 'publisher', 'source', 'placement', 'keyword', 'campaign'])
+    
+    if c_date: col_mapping[c_date] = 'Date'
+    if c_target: col_mapping[c_target] = 'Target'
+    
+    if col_mapping:
+        df.rename(columns=col_mapping, inplace=True)
+
+    if 'Date' in df.columns:
+        df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
+        df = df.dropna(subset=['Date']) 
+
+    # ✂️ EXTRAER GEO Y OS DEL TARGET
+    if 'Target' in df.columns:
+        df['GEO'] = df['Target'].astype(str).str.extract(r'-(.{2})', expand=False).str.upper()
+        df['OS'] = df['Target'].astype(str).apply(lambda x: 'iOS' if 'io' in x.lower() else 'Android')
+    
+    for col in df.columns:
+        if col not in ['Date', 'Target', 'GEO', 'OS'] and df[col].dtype == 'object':
+            try:
+                df[col] = df[col].astype(str).str.replace('$', '', regex=False).str.replace(',', '', regex=False).str.replace('%', '', regex=False)
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+            except:
+                pass
+    
+    df.attrs['original_cols'] = original_cols
+    return df
+
+# --- MOTOR DE INTERFAZ PARA TARGETS (PLANTILLA) ---
+def render_targets_ui(df_targets, key_prefix):
+    """Genera los filtros, gráficas y tabla para cualquier base de datos de targets"""
+    # --- ZONA DE FILTROS ---
+    col_f1, col_f2, col_f3 = st.columns(3)
+    min_t_date = df_targets['Date'].min()
+    max_t_date = df_targets['Date'].max()
+    
+    with col_f1:
+        t_date_range = st.date_input("📅 Filtrar Fechas:", [min_t_date, max_t_date], key=f"{key_prefix}_dates")
+        
+    with col_f2:
+        all_geos = sorted(df_targets['GEO'].dropna().astype(str).unique()) if 'GEO' in df_targets.columns else []
+        geo_selected = st.multiselect("🌍 Filtrar GEO:", options=all_geos, placeholder="Selecciona un país...", key=f"{key_prefix}_geo")
+
+    with col_f3:
+        all_os = sorted(df_targets['OS'].dropna().astype(str).unique()) if 'OS' in df_targets.columns else []
+        os_selected = st.multiselect("📱 Filtrar OS:", options=all_os, placeholder="Selecciona un sistema...", key=f"{key_prefix}_os")
+
+    all_targets = sorted(df_targets['Target'].dropna().astype(str).unique())
+    t_selected = st.multiselect("🔍 Buscar/Filtrar Target específico (Opcional):", options=all_targets, placeholder="Selecciona uno o varios targets...", key=f"{key_prefix}_target")
+
+    # --- APLICAR FILTROS EN CASCADA ---
+    mask_t = pd.Series(True, index=df_targets.index)
+    
+    if len(t_date_range) == 2:
+        mask_t = mask_t & (df_targets['Date'] >= pd.to_datetime(t_date_range[0])) & (df_targets['Date'] <= pd.to_datetime(t_date_range[1]))
+    if geo_selected:
+        mask_t = mask_t & (df_targets['GEO'].astype(str).isin(geo_selected))
+    if os_selected:
+        mask_t = mask_t & (df_targets['OS'].astype(str).isin(os_selected))
+    if t_selected:
+        mask_t = mask_t & (df_targets['Target'].astype(str).isin(t_selected))
+        
+    df_t_filtered = df_targets[mask_t]
+
+    # --- PREPARAR LA TABLA ---
+    numeric_columns = df_t_filtered.select_dtypes(include=['float64', 'int64']).columns.tolist()
+    
+    group_cols = ['Date', 'Target']
+    if 'GEO' in df_t_filtered.columns:
+        group_cols.insert(1, 'GEO')
+    if 'OS' in df_t_filtered.columns:
+        group_cols.insert(2, 'OS')
+        
+    df_grouped = df_t_filtered.groupby(group_cols)[numeric_columns].sum().reset_index()
+    
+    # --- 🚀 GRÁFICAS CONDICIONALES ---
+    if geo_selected and os_selected:
+        st.divider()
+        st.subheader("📈 Rendimiento Diario de Targets Filtrados")
+        
+        col_received = next((c for c in numeric_columns if 'received' in c.lower() or 'visit' in c.lower()), None)
+        col_cpm = next((c for c in numeric_columns if 'cpm' in c.lower()), None)
+        
+        if col_received:
+            df_chart_received = df_t_filtered.groupby(['Date', 'Target'])[col_received].sum().reset_index()
+            fig_received = px.line(
+                df_chart_received, x='Date', y=col_received, color='Target', markers=True,
+                title=f"Evolución de {col_received}"
+            )
+            st.plotly_chart(fig_received, use_container_width=True) 
+        else:
+            st.warning("No se encontró columna para Received Traffic/Visits.")
+        
+        st.write("")
+        
+        if col_cpm:
+            df_chart_cpm = df_t_filtered.groupby(['Date', 'Target'])[col_cpm].mean().reset_index()
+            fig_cpm = px.line(
+                df_chart_cpm, x='Date', y=col_cpm, color='Target', markers=True,
+                title=f"Evolución de {col_cpm} (Promedio)"
+            )
+            st.plotly_chart(fig_cpm, use_container_width=True)
+        else:
+            st.warning("No se encontró columna para CPM.")
+            
+        st.divider()
+    else:
+        st.info("💡 **Tip:** Selecciona un GEO y un OS en los filtros de arriba para desbloquear las gráficas de rendimiento visual.")
+
+    # Formateamos fecha para la tabla
+    df_grouped['Date'] = pd.to_datetime(df_grouped['Date']).dt.strftime('%Y-%m-%d')
+    sort_ascending = [False] + [True] * (len(group_cols) - 1)
+    df_grouped = df_grouped.sort_values(by=group_cols, ascending=sort_ascending)
+    
+    st.markdown(f"**Total de filas mostradas:** {len(df_grouped)}")
+    st.dataframe(df_grouped, use_container_width=True, height=600, hide_index=True)
+
+
 # --- CARGA DEL DASHBOARD PRINCIPAL (AOS/IOS) ---
 @st.cache_data(ttl=600)
 def load_data():
     urls = {'Android': get_url(GID_ANDROID), 'iOS': get_url(GID_IOS)}
     dfs = []
-    
     for os_name, url in urls.items():
         try:
             df = pd.read_csv(url)
@@ -92,57 +216,31 @@ def load_data():
         return pd.concat(dfs, ignore_index=True).fillna(0)
     return None
 
-# --- CARGA DE LA PESTAÑA TARGETS (ZEROPARK) ---
+# --- CARGA DE LA PESTAÑA TARGETS DESDE GOOGLE SHEETS ---
 @st.cache_data(ttl=600)
 def load_targets_data():
     url = get_url(GID_TARGETS)
     try:
         df = pd.read_csv(url)
         df.columns = df.columns.str.strip().str.replace('"', '')
-        original_cols = list(df.columns)
-        
-        col_mapping = {}
-        c_date = find_column_strict(df.columns, ['date', 'day', 'fecha', 'v', 'time', 'interval', 'period'])
-        c_target = find_column_strict(df.columns, ['target', 'id target', 'subid', 'publisher', 'source', 'placement', 'keyword', 'campaign'])
-        
-        if c_date: col_mapping[c_date] = 'Date'
-        if c_target: col_mapping[c_target] = 'Target'
-        
-        if col_mapping:
-            df.rename(columns=col_mapping, inplace=True)
-
-        if 'Date' in df.columns:
-            df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
-            df = df.dropna(subset=['Date']) 
-
-        # ✂️ EXTRAER GEO Y OS DEL TARGET
-        if 'Target' in df.columns:
-            df['GEO'] = df['Target'].astype(str).str.extract(r'-(.{2})', expand=False).str.upper()
-            df['OS'] = df['Target'].astype(str).apply(lambda x: 'iOS' if 'io' in x.lower() else 'Android')
-        
-        for col in df.columns:
-            if col not in ['Date', 'Target', 'GEO', 'OS'] and df[col].dtype == 'object':
-                try:
-                    df[col] = df[col].astype(str).str.replace('$', '', regex=False).str.replace(',', '', regex=False).str.replace('%', '', regex=False)
-                    df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-                except:
-                    pass
-        
-        df.attrs['original_cols'] = original_cols
-        return df
-    
+        return clean_target_df(df)
     except Exception as e:
         st.error(f"Error cargando pestaña Zeropark: {e}")
         return None
 
-# --- CARGAR AMBAS BASES DE DATOS ---
+# --- CARGAR AMBAS BASES DE DATOS NATIVAS ---
 df_main = load_data()
 df_targets = load_targets_data()
 
 # --- INTERFAZ ---
 st.title("📊 Dashboard Financiero & Operativo")
 
-tab_principal, tab_targets = st.tabs(["📈 Dashboard Principal", "🎯 Análisis de Targets (Zeropark)"])
+# 🌟 NUEVO: TRES PESTAÑAS
+tab_principal, tab_targets, tab_csv = st.tabs([
+    "📈 Dashboard Principal", 
+    "🎯 Análisis de Targets (Zeropark)", 
+    "📁 Analizar CSV Local"
+])
 
 # ==============================================================================
 # 🗂️ PESTAÑA 1: DASHBOARD PRINCIPAL
@@ -231,18 +329,11 @@ with tab_principal:
 
         st.divider()
 
-        # --- NUEVA SECCIÓN: TABLA DE DATOS DEL DASHBOARD PRINCIPAL ---
         st.subheader("📂 Datos Detallados")
-        
-        # Hacemos una copia para darle formato visual sin romper las gráficas
         df_display = df_filtered.copy()
-        
-        # Formateamos la fecha para que se lea mejor (sin horas)
         if 'Date' in df_display.columns:
             df_display['Date'] = df_display['Date'].dt.strftime('%Y-%m-%d')
-            # Ordenamos para que lo más reciente salga primero
             df_display = df_display.sort_values(by='Date', ascending=False)
-        
         st.markdown(f"**Total de registros mostrados:** {len(df_display)}")
         st.dataframe(df_display, use_container_width=True, hide_index=True)
 
@@ -250,106 +341,53 @@ with tab_principal:
         st.info("⏳ Cargando datos del Dashboard...")
 
 # ==============================================================================
-# 🎯 PESTAÑA 2: ANÁLISIS DE TARGETS (ZEROPARK)
+# 🎯 PESTAÑA 2: ANÁLISIS DE TARGETS (ZEROPARK GOOGLE SHEETS)
 # ==============================================================================
 with tab_targets:
-    st.subheader("🎯 Tabla de Rendimiento por Target y Día")
+    st.subheader("🎯 Rendimiento desde Google Sheets")
     
     if df_targets is not None and not df_targets.empty:
         if 'Date' in df_targets.columns and 'Target' in df_targets.columns:
-            
-            # --- ZONA DE FILTROS ---
-            col_f1, col_f2, col_f3 = st.columns(3)
-            min_t_date = df_targets['Date'].min()
-            max_t_date = df_targets['Date'].max()
-            
-            with col_f1:
-                t_date_range = st.date_input("📅 Filtrar Fechas:", [min_t_date, max_t_date], key="target_dates")
-                
-            with col_f2:
-                all_geos = sorted(df_targets['GEO'].dropna().astype(str).unique()) if 'GEO' in df_targets.columns else []
-                geo_selected = st.multiselect("🌍 Filtrar GEO:", options=all_geos, placeholder="Selecciona un país...")
-
-            with col_f3:
-                all_os = sorted(df_targets['OS'].dropna().astype(str).unique()) if 'OS' in df_targets.columns else []
-                os_selected = st.multiselect("📱 Filtrar OS:", options=all_os, placeholder="Selecciona un sistema...")
-
-            all_targets = sorted(df_targets['Target'].dropna().astype(str).unique())
-            t_selected = st.multiselect("🔍 Buscar/Filtrar Target específico (Opcional):", options=all_targets, placeholder="Selecciona uno o varios targets...")
-
-            # --- APLICAR FILTROS EN CASCADA ---
-            mask_t = pd.Series(True, index=df_targets.index)
-            
-            if len(t_date_range) == 2:
-                mask_t = mask_t & (df_targets['Date'] >= pd.to_datetime(t_date_range[0])) & (df_targets['Date'] <= pd.to_datetime(t_date_range[1]))
-            if geo_selected:
-                mask_t = mask_t & (df_targets['GEO'].astype(str).isin(geo_selected))
-            if os_selected:
-                mask_t = mask_t & (df_targets['OS'].astype(str).isin(os_selected))
-            if t_selected:
-                mask_t = mask_t & (df_targets['Target'].astype(str).isin(t_selected))
-                
-            df_t_filtered = df_targets[mask_t]
-
-            # --- PREPARAR LA TABLA ---
-            numeric_columns = df_t_filtered.select_dtypes(include=['float64', 'int64']).columns.tolist()
-            
-            group_cols = ['Date', 'Target']
-            if 'GEO' in df_t_filtered.columns:
-                group_cols.insert(1, 'GEO')
-            if 'OS' in df_t_filtered.columns:
-                group_cols.insert(2, 'OS')
-                
-            df_grouped = df_t_filtered.groupby(group_cols)[numeric_columns].sum().reset_index()
-            
-            # --- 🚀 GRÁFICAS CONDICIONALES EN GRANDE Y APILADAS ---
-            if geo_selected and os_selected:
-                st.divider()
-                st.subheader("📈 Rendimiento Diario de Targets Filtrados")
-                
-                # Buscamos de forma inteligente las columnas
-                col_received = next((c for c in numeric_columns if 'received' in c.lower() or 'visit' in c.lower()), None)
-                col_cpm = next((c for c in numeric_columns if 'cpm' in c.lower()), None)
-                
-                # 1. GRÁFICA DE RECEIVED TRAFFIC / VISITS (ARRIBA)
-                if col_received:
-                    df_chart_received = df_t_filtered.groupby(['Date', 'Target'])[col_received].sum().reset_index()
-                    fig_received = px.line(
-                        df_chart_received, x='Date', y=col_received, color='Target', markers=True,
-                        title=f"Evolución de {col_received}"
-                    )
-                    st.plotly_chart(fig_received, use_container_width=True) # Ocupa todo el ancho
-                else:
-                    st.warning("No se encontró columna para Received Traffic/Visits.")
-                
-                st.write("")
-                
-                # 2. GRÁFICA DE CPM (DEBAJO)
-                if col_cpm:
-                    df_chart_cpm = df_t_filtered.groupby(['Date', 'Target'])[col_cpm].mean().reset_index()
-                    fig_cpm = px.line(
-                        df_chart_cpm, x='Date', y=col_cpm, color='Target', markers=True,
-                        title=f"Evolución de {col_cpm} (Promedio)"
-                    )
-                    st.plotly_chart(fig_cpm, use_container_width=True) # Ocupa todo el ancho
-                else:
-                    st.warning("No se encontró columna para CPM.")
-                    
-                st.divider()
-            else:
-                st.info("💡 **Tip:** Selecciona un GEO y un OS en los filtros de arriba para desbloquear las gráficas de rendimiento visual.")
-
-            # Formateamos fecha para la tabla
-            df_grouped['Date'] = pd.to_datetime(df_grouped['Date']).dt.strftime('%Y-%m-%d')
-            sort_ascending = [False] + [True] * (len(group_cols) - 1)
-            df_grouped = df_grouped.sort_values(by=group_cols, ascending=sort_ascending)
-            
-            st.markdown(f"**Total de filas mostradas:** {len(df_grouped)}")
-            st.dataframe(df_grouped, use_container_width=True, height=600, hide_index=True)
-            
+            # Llamamos al motor que hemos creado arriba pasándole el ID "zp"
+            render_targets_ui(df_targets, "zp")
         else:
             cols_found = df_targets.attrs.get('original_cols', list(df_targets.columns))
             st.error("⚠️ Sigo sin encontrar la columna 'Date' o 'Target'.")
-            st.info(f"🕵️ **Las columnas que estoy leyendo en la fila 1 son:** \n\n `{cols_found}`")
+            st.info(f"🕵️ **Columnas detectadas:** \n\n `{cols_found}`")
     else:
-        st.info("⏳ Cargando datos de Targets o el documento está vacío...")
+        st.info("⏳ Cargando datos de Targets...")
+
+# ==============================================================================
+# 📁 PESTAÑA 3: ANÁLISIS DE CSV LOCAL (¡NUEVO!)
+# ==============================================================================
+with tab_csv:
+    st.subheader("📁 Analizar tu propio archivo CSV")
+    st.write("Sube un archivo `.csv` (por ejemplo, exportado directamente de tu red) y aplícale los mismos filtros y gráficas inteligentes.")
+    
+    uploaded_file = st.file_uploader("Sube tu archivo CSV aquí", type=['csv'])
+    
+    if uploaded_file is not None:
+        try:
+            # Leemos el archivo subido
+            df_raw_csv = pd.read_csv(uploaded_file)
+            df_raw_csv.columns = df_raw_csv.columns.str.strip().str.replace('"', '')
+            
+            # Lo pasamos por nuestra función limpiadora
+            df_cleaned_csv = clean_target_df(df_raw_csv)
+            
+            if df_cleaned_csv is not None and not df_cleaned_csv.empty:
+                if 'Date' in df_cleaned_csv.columns and 'Target' in df_cleaned_csv.columns:
+                    st.success("✅ Archivo cargado y procesado correctamente.")
+                    # Llamamos al mismo motor visual, pero con ID "csv" para que no se pise con los otros filtros
+                    render_targets_ui(df_cleaned_csv, "csv")
+                else:
+                    cols_found = df_cleaned_csv.attrs.get('original_cols', list(df_cleaned_csv.columns))
+                    st.error("⚠️ El CSV subido no tiene el formato correcto (Falta 'Date' o 'Target').")
+                    st.info(f"🕵️ **Columnas detectadas en tu archivo:** \n\n `{cols_found}`")
+            else:
+                st.warning("⚠️ El archivo subido parece estar vacío tras la limpieza.")
+                
+        except Exception as e:
+            st.error(f"❌ Error al leer el archivo CSV: {e}")
+    else:
+        st.info("👆 Esperando a que subas un archivo .csv...")

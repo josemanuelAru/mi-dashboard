@@ -31,7 +31,7 @@ def find_column_strict(columns, candidates):
 
 # --- FUNCIÓN LIMPIEZA DE TARGETS (REUTILIZABLE) ---
 def clean_target_df(df):
-    """Limpia cualquier dataframe (sea de URL o subido por CSV) con la lógica de Zeropark"""
+    """Limpia cualquier dataframe con la lógica de Zeropark"""
     original_cols = list(df.columns)
     col_mapping = {}
     
@@ -64,15 +64,18 @@ def clean_target_df(df):
     df.attrs['original_cols'] = original_cols
     return df
 
-# --- MOTOR DE INTERFAZ PARA TARGETS (PLANTILLA) ---
+# --- MOTOR DE INTERFAZ PARA TARGETS (PLANTILLA INDEPENDIENTE) ---
 def render_targets_ui(df_targets, key_prefix):
-    """Genera los filtros, gráficas y tabla para cualquier base de datos de targets"""
-    # --- ZONA DE FILTROS ---
+    """
+    Genera los filtros, gráficas y tabla. 
+    key_prefix hace que los filtros sean 100% independientes entre pestañas.
+    """
     col_f1, col_f2, col_f3 = st.columns(3)
     min_t_date = df_targets['Date'].min()
     max_t_date = df_targets['Date'].max()
     
     with col_f1:
+        # El 'key' asegura que este filtro no se mezcle con el de otras pestañas
         t_date_range = st.date_input("📅 Filtrar Fechas:", [min_t_date, max_t_date], key=f"{key_prefix}_dates")
         
     with col_f2:
@@ -86,7 +89,6 @@ def render_targets_ui(df_targets, key_prefix):
     all_targets = sorted(df_targets['Target'].dropna().astype(str).unique())
     t_selected = st.multiselect("🔍 Buscar/Filtrar Target específico (Opcional):", options=all_targets, placeholder="Selecciona uno o varios targets...", key=f"{key_prefix}_target")
 
-    # --- APLICAR FILTROS EN CASCADA ---
     mask_t = pd.Series(True, index=df_targets.index)
     
     if len(t_date_range) == 2:
@@ -100,7 +102,6 @@ def render_targets_ui(df_targets, key_prefix):
         
     df_t_filtered = df_targets[mask_t]
 
-    # --- PREPARAR LA TABLA ---
     numeric_columns = df_t_filtered.select_dtypes(include=['float64', 'int64']).columns.tolist()
     
     group_cols = ['Date', 'Target']
@@ -111,7 +112,6 @@ def render_targets_ui(df_targets, key_prefix):
         
     df_grouped = df_t_filtered.groupby(group_cols)[numeric_columns].sum().reset_index()
     
-    # --- 🚀 GRÁFICAS CONDICIONALES ---
     if geo_selected and os_selected:
         st.divider()
         st.subheader("📈 Rendimiento Diario de Targets Filtrados")
@@ -145,7 +145,6 @@ def render_targets_ui(df_targets, key_prefix):
     else:
         st.info("💡 **Tip:** Selecciona un GEO y un OS en los filtros de arriba para desbloquear las gráficas de rendimiento visual.")
 
-    # Formateamos fecha para la tabla
     df_grouped['Date'] = pd.to_datetime(df_grouped['Date']).dt.strftime('%Y-%m-%d')
     sort_ascending = [False] + [True] * (len(group_cols) - 1)
     df_grouped = df_grouped.sort_values(by=group_cols, ascending=sort_ascending)
@@ -235,11 +234,11 @@ df_targets = load_targets_data()
 # --- INTERFAZ ---
 st.title("📊 Dashboard Financiero & Operativo")
 
-# 🌟 NUEVO: TRES PESTAÑAS
+# 🌟 AQUÍ SE CREAN LAS TRES PESTAÑAS
 tab_principal, tab_targets, tab_csv = st.tabs([
     "📈 Dashboard Principal", 
-    "🎯 Análisis de Targets (Zeropark)", 
-    "📁 Analizar CSV Local"
+    "🎯 Análisis de Targets (Google Sheets)", 
+    "📁 Analizar CSV Local (Independiente)"
 ])
 
 # ==============================================================================
@@ -248,7 +247,7 @@ tab_principal, tab_targets, tab_csv = st.tabs([
 with tab_principal:
     if df_main is not None and not df_main.empty:
         
-        st.sidebar.header("Filtros Globales (Dashboard)")
+        st.sidebar.header("Filtros Globales (Dashboard Principal)")
         min_date = df_main['Date'].min()
         max_date = df_main['Date'].max()
         
@@ -256,10 +255,10 @@ with tab_principal:
             st.error("⚠️ No hay fechas válidas. Revisa el Excel.")
             st.stop()
             
-        date_range = st.sidebar.date_input("Rango de Fechas", [min_date, max_date])
-        selected_os = st.sidebar.multiselect("Sistema Operativo", df_main['OS'].unique(), default=df_main['OS'].unique())
+        date_range = st.sidebar.date_input("Rango de Fechas", [min_date, max_date], key="dash_dates")
+        selected_os = st.sidebar.multiselect("Sistema Operativo", df_main['OS'].unique(), default=df_main['OS'].unique(), key="dash_os")
         countries_list = sorted(df_main['Country'].unique().astype(str)) if 'Country' in df_main.columns else []
-        selected_countries = st.sidebar.multiselect("Países", countries_list, default=countries_list)
+        selected_countries = st.sidebar.multiselect("Países", countries_list, default=countries_list, key="dash_countries")
 
         mask = (df_main['OS'].isin(selected_os))
         if len(date_range) == 2:
@@ -316,7 +315,7 @@ with tab_principal:
         
         col_sel, col_chart = st.columns([1, 3])
         with col_sel:
-            selected_metrics = st.multiselect("Selecciona Métricas:", options=available_zp, default=available_zp[:2] if available_zp else None)
+            selected_metrics = st.multiselect("Selecciona Métricas:", options=available_zp, default=available_zp[:2] if available_zp else None, key="dash_metrics")
         with col_chart:
             if selected_metrics:
                 agg_rules = {m: 'sum' if 'Visits' in m else 'mean' for m in selected_metrics}
@@ -344,11 +343,11 @@ with tab_principal:
 # 🎯 PESTAÑA 2: ANÁLISIS DE TARGETS (ZEROPARK GOOGLE SHEETS)
 # ==============================================================================
 with tab_targets:
-    st.subheader("🎯 Rendimiento desde Google Sheets")
+    st.subheader("🎯 Rendimiento desde Google Sheets (Pestaña 2)")
     
     if df_targets is not None and not df_targets.empty:
         if 'Date' in df_targets.columns and 'Target' in df_targets.columns:
-            # Llamamos al motor que hemos creado arriba pasándole el ID "zp"
+            # Aquí usamos el prefijo "zp" para los filtros. Son únicos de esta pestaña.
             render_targets_ui(df_targets, "zp")
         else:
             cols_found = df_targets.attrs.get('original_cols', list(df_targets.columns))
@@ -358,30 +357,27 @@ with tab_targets:
         st.info("⏳ Cargando datos de Targets...")
 
 # ==============================================================================
-# 📁 PESTAÑA 3: ANÁLISIS DE CSV LOCAL
+# 📁 PESTAÑA 3: ANÁLISIS DE CSV LOCAL (COMPLETAMENTE INDEPENDIENTE)
 # ==============================================================================
 with tab_csv:
-    st.subheader("📁 Analizar tu propio archivo CSV")
-    st.write("Sube un archivo `.csv` y aplícale los mismos filtros y gráficas inteligentes.")
+    st.subheader("📁 Analiza tu propio CSV (Pestaña 3)")
+    st.write("Sube tu archivo `.csv`. Los filtros de esta pestaña son 100% independientes de la pestaña 2.")
     
     uploaded_file = st.file_uploader("Sube tu archivo CSV aquí", type=['csv'])
     
     if uploaded_file is not None:
         try:
-            # 1. AUTO-DETECCIÓN DE SEPARADOR: sep=None y engine='python'
-            # Esto evita el error de las comas vs puntos y comas (;)
+            # Activamos detección de separadores por si es un CSV europeo (con punto y coma)
             df_raw_csv = pd.read_csv(uploaded_file, sep=None, engine='python')
             df_raw_csv.columns = df_raw_csv.columns.str.strip().str.replace('"', '')
             
-            # Guardamos una copia exacta para el "Modo Detective"
             df_debug = df_raw_csv.copy()
-            
-            # Limpiamos usando nuestra función central
             df_cleaned_csv = clean_target_df(df_raw_csv)
             
             if df_cleaned_csv is not None and not df_cleaned_csv.empty:
                 if 'Date' in df_cleaned_csv.columns and 'Target' in df_cleaned_csv.columns:
                     st.success("✅ Archivo cargado y procesado correctamente.")
+                    # Aquí usamos el prefijo "csv". Esto garantiza que no compartan filtros con "zp".
                     render_targets_ui(df_cleaned_csv, "csv")
                 else:
                     cols_found = df_cleaned_csv.attrs.get('original_cols', list(df_cleaned_csv.columns))
@@ -389,11 +385,10 @@ with tab_csv:
                     st.info(f"🕵️ **Columnas detectadas:** `{cols_found}`")
             else:
                 st.warning("⚠️ El archivo subido se ha quedado vacío tras intentar procesar las fechas.")
-                st.write("🕵️ **MODO DETECTIVE:** Así es como el programa está viendo tu archivo en bruto antes de limpiarlo. ¿Ves algo raro en la columna de Fechas o están los títulos en la fila equivocada?")
-                # Mostramos la tabla en bruto para descubrir el error visualmente
+                st.write("🕵️ **MODO DETECTIVE:** Así es como el programa está viendo tu archivo en bruto. Verifica si el formato de fecha es extraño.")
                 st.dataframe(df_debug.head(15), use_container_width=True)
                 
         except Exception as e:
-            st.error(f"❌ Error crítico al leer el archivo CSV: {e}")
+            st.error(f"❌ Error al leer el archivo CSV: {e}")
     else:
         st.info("👆 Esperando a que subas un archivo .csv...")

@@ -71,8 +71,8 @@ def clean_target_df(df):
     return df
 
 # --- MOTOR DE INTERFAZ PARA TARGETS (CON INTERRUPTORES) ---
-def render_targets_ui(df_targets, key_prefix, show_charts=True, show_totals=False):
-    """Genera los filtros y tabla. Incluye parámetros para ocultar gráficas y mostrar totales en negrita."""
+def render_targets_ui(df_targets, key_prefix, show_charts=True, show_totals=False, calc_cpm_enviado=False):
+    """Genera los filtros y tabla. Incluye parámetros para ocultar gráficas, mostrar totales y calcular CPM Enviado."""
     has_date = 'Date' in df_targets.columns
     
     col_f1, col_f2, col_f3 = st.columns(3)
@@ -192,19 +192,34 @@ def render_targets_ui(df_targets, key_prefix, show_charts=True, show_totals=Fals
         df_totals = pd.DataFrame([totals_dict])
         df_grouped = pd.concat([df_grouped, df_totals], ignore_index=True)
         num_rows = len(df_grouped) - 1
+    else:
+        num_rows = len(df_grouped)
         
+    # --- 🚀 NUEVO: CÁLCULO DE 'CPM ENVIADO' DESPUÉS DEL TOTAL ---
+    if calc_cpm_enviado:
+        # Buscamos columnas independientemente del nombre exacto
+        col_rec = next((c for c in df_grouped.columns if 'received' in str(c).lower()), None)
+        col_pay = next((c for c in df_grouped.columns if 'payout' in str(c).lower() or 'revenue' in str(c).lower()), None)
+        
+        if col_rec and col_pay:
+            # Forzamos numérico y calculamos
+            pay_vals = pd.to_numeric(df_grouped[col_pay], errors='coerce').fillna(0)
+            rec_vals = pd.to_numeric(df_grouped[col_rec], errors='coerce').replace(0, float('nan'))
+            
+            df_grouped['CPM Enviado'] = (pay_vals / rec_vals) * 1000
+            df_grouped['CPM Enviado'] = df_grouped['CPM Enviado'].fillna(0)
+
+    # --- RENDER DE TABLA (CON O SIN ESTILO DE TOTAL) ---
+    if show_totals and geo_selected and os_selected:
         def style_total_row(row):
             if row.iloc[0] == "📌 TOTAL":
                 return ['font-weight: bold; background-color: rgba(255, 255, 0, 0.1);'] * len(row)
             return [''] * len(row)
             
         styled_df = df_grouped.style.apply(style_total_row, axis=1)
-        
         st.markdown(f"**Total de filas mostradas (con filtros):** {num_rows}")
         st.dataframe(styled_df, use_container_width=True, height=600, hide_index=True)
-    
     else:
-        num_rows = len(df_grouped)
         st.markdown(f"**Total de filas mostradas (con filtros):** {num_rows}")
         st.dataframe(df_grouped, use_container_width=True, height=600, hide_index=True)
 
@@ -402,7 +417,8 @@ with tab_targets:
     
     if df_targets is not None and not df_targets.empty:
         if 'Target' in df_targets.columns:
-            render_targets_ui(df_targets, "zp", show_charts=True, show_totals=False)
+            # Aquí NO calculamos el CPM Enviado. Se queda como estaba.
+            render_targets_ui(df_targets, "zp", show_charts=True, show_totals=False, calc_cpm_enviado=False)
         else:
             cols_found = df_targets.attrs.get('original_cols', list(df_targets.columns))
             st.error("⚠️ No encuentro la columna 'Target' en Google Sheets.")
@@ -415,17 +431,15 @@ with tab_targets:
 # ==============================================================================
 with tab_csv:
     st.subheader("📁 Analiza tus propios CSV (Pestaña 3)")
-    st.write("Puedes subir **varios archivos `.csv` a la vez**. El programa los unirá automáticamente y te mostrará el análisis conjunto.")
+    st.write("Sube **varios archivos `.csv` a la vez**. El programa los unirá automáticamente y añadirá el cálculo de **CPM Enviado**.")
     
-    # Añadido accept_multiple_files=True
     uploaded_files = st.file_uploader("Sube tus archivos CSV aquí", type=['csv'], accept_multiple_files=True)
     
-    if uploaded_files: # Si hay al menos un archivo
+    if uploaded_files: 
         try:
             dfs_csv = []
             archivos_vacios = False
             
-            # Recorremos todos los archivos subidos y los limpiamos
             for file in uploaded_files:
                 df_raw_csv = pd.read_csv(file, sep=None, engine='python')
                 df_raw_csv.columns = df_raw_csv.columns.str.strip().str.replace('"', '')
@@ -437,30 +451,39 @@ with tab_csv:
                 else:
                     archivos_vacios = True
             
-            # Si hemos conseguido extraer datos válidos de al menos uno
             if dfs_csv:
                 st.success(f"✅ Se han cargado y combinado correctamente {len(dfs_csv)} archivo(s).")
                 if archivos_vacios:
                     st.warning("⚠️ Nota: Algún archivo se omitió porque estaba vacío o le faltaba la columna 'Target'.")
                 
-                # Unimos todos los dataframes en uno solo gigante
                 df_combined_csv = pd.concat(dfs_csv, ignore_index=True)
                 
-                # 1. MOSTRAMOS LOS FILTROS Y LA TABLA FILTRADA
-                render_targets_ui(df_combined_csv, "csv", show_charts=False, show_totals=True)
+                # 1. MOSTRAMOS LA TABLA FILTRADA CON EL CPM ENVIADO ENCENDIDO
+                render_targets_ui(df_combined_csv, "csv", show_charts=False, show_totals=True, calc_cpm_enviado=True)
                 
-                # 2. MOSTRAMOS EL RESUMEN GLOBAL (ORDENADO POR GEO, OS)
+                # 2. MOSTRAMOS EL RESUMEN GLOBAL 
                 st.divider()
                 st.subheader("🌐 Resumen Global Acumulado (Sin Filtros)")
-                st.write("Esta tabla inferior te muestra la suma de TODOS los archivos combinados, agrupado primero por **GEO** y después por **OS**.")
+                st.write("Esta tabla muestra la suma de TODOS los archivos combinados, agrupado primero por **GEO** y después por **OS**.")
                 
                 if 'GEO' in df_combined_csv.columns and 'OS' in df_combined_csv.columns:
                     num_cols = df_combined_csv.select_dtypes(include=['float64', 'int64']).columns.tolist()
                     
                     # Agrupamos primero por GEO, luego por OS
                     df_global_summary = df_combined_csv.groupby(['GEO', 'OS'], dropna=False)[num_cols].sum().reset_index()
-                    df_global_summary = df_global_summary.sort_values(by=['GEO', 'OS'])
                     
+                    # --- CÁLCULO DE CPM ENVIADO PARA LA TABLA GLOBAL ---
+                    col_rec_g = next((c for c in df_global_summary.columns if 'received' in str(c).lower()), None)
+                    col_pay_g = next((c for c in df_global_summary.columns if 'payout' in str(c).lower() or 'revenue' in str(c).lower()), None)
+                    
+                    if col_rec_g and col_pay_g:
+                        pay_vals_g = pd.to_numeric(df_global_summary[col_pay_g], errors='coerce').fillna(0)
+                        rec_vals_g = pd.to_numeric(df_global_summary[col_rec_g], errors='coerce').replace(0, float('nan'))
+                        
+                        df_global_summary['CPM Enviado'] = (pay_vals_g / rec_vals_g) * 1000
+                        df_global_summary['CPM Enviado'] = df_global_summary['CPM Enviado'].fillna(0)
+                        
+                    df_global_summary = df_global_summary.sort_values(by=['GEO', 'OS'])
                     st.dataframe(df_global_summary, use_container_width=True, hide_index=True)
                 else:
                     st.info("No se han podido generar las columnas GEO y OS para mostrar el resumen global.")

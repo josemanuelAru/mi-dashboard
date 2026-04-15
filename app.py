@@ -20,13 +20,10 @@ def get_url(gid):
 # --- FUNCIÓN DE BÚSQUEDA EXACTA ---
 def find_column_strict(columns, candidates):
     cols_clean = [str(c).lower().strip() for c in columns]
-    # 1. Búsqueda exacta primero
     for cand in candidates:
         cand = cand.lower().strip()
         if cand in cols_clean:
             return columns[cols_clean.index(cand)]
-            
-    # 2. Búsqueda inteligente
     for cand in candidates:
         cand = cand.lower().strip()
         if len(cand) > 2:
@@ -54,25 +51,24 @@ def clean_target_df(df):
         df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
         df = df.dropna(subset=['Date']) 
 
-    # ✂️ EXTRAER GEO Y OS DEL TARGET
     if 'Target' in df.columns:
         df['GEO'] = df['Target'].astype(str).str.extract(r'-(.{2})', expand=False).str.upper().fillna('N/A')
         df['OS'] = df['Target'].astype(str).apply(lambda x: 'iOS' if 'io' in x.lower() else 'Android')
     
+    # BLINDAJE: Forzamos la limpieza numérica a todo lo que no sea categoría
     for col in df.columns:
-        if col not in ['Date', 'Target', 'GEO', 'OS'] and df[col].dtype == 'object':
-            try:
-                df[col] = df[col].astype(str).str.replace('$', '', regex=False).str.replace(',', '', regex=False).str.replace('%', '', regex=False)
-                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-            except:
-                pass
+        if col not in ['Date', 'Target', 'GEO', 'OS']:
+            df[col] = df[col].astype(str).str.replace('$', '', regex=False)\
+                                         .str.replace('€', '', regex=False)\
+                                         .str.replace(',', '', regex=False)\
+                                         .str.replace('%', '', regex=False)
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
     
     df.attrs['original_cols'] = original_cols
     return df
 
-# --- MOTOR DE INTERFAZ PARA TARGETS (CON INTERRUPTORES) ---
+# --- MOTOR DE INTERFAZ PARA TARGETS ---
 def render_targets_ui(df_targets, key_prefix, show_charts=True, show_totals=False, calc_cpm_enviado=False):
-    """Genera los filtros y tabla. Incluye parámetros para ocultar gráficas, mostrar totales y calcular CPM Enviado."""
     has_date = 'Date' in df_targets.columns
     
     col_f1, col_f2, col_f3 = st.columns(3)
@@ -97,9 +93,8 @@ def render_targets_ui(df_targets, key_prefix, show_charts=True, show_totals=Fals
     all_targets = sorted(df_targets['Target'].astype(str).unique())
     t_selected = st.multiselect("🔍 Buscar/Filtrar Target específico:", options=all_targets, placeholder="Selecciona uno o varios targets...", key=f"{key_prefix}_target")
 
-    # --- APLICAR FILTROS ---
+    # APLICAR FILTROS
     mask_t = pd.Series(True, index=df_targets.index)
-    
     if has_date and len(t_date_range) == 2:
         mask_t = mask_t & (df_targets['Date'] >= pd.to_datetime(t_date_range[0])) & (df_targets['Date'] <= pd.to_datetime(t_date_range[1]))
     if geo_selected:
@@ -110,31 +105,25 @@ def render_targets_ui(df_targets, key_prefix, show_charts=True, show_totals=Fals
         mask_t = mask_t & (df_targets['Target'].astype(str).isin(t_selected))
         
     df_t_filtered = df_targets[mask_t]
-
     numeric_columns = df_t_filtered.select_dtypes(include=['float64', 'int64']).columns.tolist()
     
-    # --- AGRUPACIÓN ---
+    # AGRUPACIÓN
     group_cols = []
-    if has_date:
-        group_cols.append('Date')
-    if 'GEO' in df_t_filtered.columns:
-        group_cols.append('GEO')
-    if 'OS' in df_t_filtered.columns:
-        group_cols.append('OS')
+    if has_date: group_cols.append('Date')
+    if 'GEO' in df_t_filtered.columns: group_cols.append('GEO')
+    if 'OS' in df_t_filtered.columns: group_cols.append('OS')
     group_cols.append('Target')
         
     df_grouped = df_t_filtered.groupby(group_cols, dropna=False)[numeric_columns].sum().reset_index()
     
-    # --- 🚀 GRÁFICAS (SÓLO SI ESTÁN ACTIVADAS) ---
+    # GRÁFICAS
     if show_charts:
         if geo_selected and os_selected:
             st.divider()
             st.subheader("📈 Rendimiento de Targets Filtrados")
-            
             col_received = next((c for c in numeric_columns if 'received' in c.lower() or 'visit' in c.lower()), None)
             col_cpm = next((c for c in numeric_columns if 'cpm' in c.lower()), None)
             
-            # 1. TRÁFICO
             if col_received:
                 if has_date:
                     df_chart_received = df_t_filtered.groupby(['Date', 'Target'], dropna=False)[col_received].sum().reset_index()
@@ -142,14 +131,12 @@ def render_targets_ui(df_targets, key_prefix, show_charts=True, show_totals=Fals
                 else:
                     df_chart_received = df_t_filtered.groupby(['Target'], dropna=False)[col_received].sum().reset_index()
                     fig_received = px.bar(df_chart_received, x='Target', y=col_received, color='Target', title=f"Total acumulado de {col_received}")
-                
                 st.plotly_chart(fig_received, use_container_width=True) 
             else:
                 st.warning("No se encontró columna para Received Traffic/Visits.")
             
             st.write("")
             
-            # 2. CPM
             if col_cpm:
                 if has_date:
                     df_chart_cpm = df_t_filtered.groupby(['Date', 'Target'], dropna=False)[col_cpm].mean().reset_index()
@@ -157,18 +144,16 @@ def render_targets_ui(df_targets, key_prefix, show_charts=True, show_totals=Fals
                 else:
                     df_chart_cpm = df_t_filtered.groupby(['Target'], dropna=False)[col_cpm].mean().reset_index()
                     fig_cpm = px.bar(df_chart_cpm, x='Target', y=col_cpm, color='Target', title=f"Comparativa de {col_cpm} (Promedio)")
-                    
                 st.plotly_chart(fig_cpm, use_container_width=True)
             else:
                 st.warning("No se encontró columna para CPM.")
-                
             st.divider()
         else:
             st.info("💡 **Tip:** Selecciona un GEO y un OS en los filtros de arriba para desbloquear las gráficas.")
     else:
         st.divider()
 
-    # Formato y Orden de la tabla
+    # Formato
     if has_date:
         df_grouped['Date'] = pd.to_datetime(df_grouped['Date']).dt.strftime('%Y-%m-%d')
         sort_ascending = [False] + [True] * (len(group_cols) - 1)
@@ -177,7 +162,7 @@ def render_targets_ui(df_targets, key_prefix, show_charts=True, show_totals=Fals
         
     df_grouped = df_grouped.sort_values(by=group_cols, ascending=sort_ascending)
     
-    # --- 🚀 FILA DE TOTALES EN NEGRITA ---
+    # FILA DE TOTALES
     if show_totals and geo_selected and os_selected:
         totals_dict = {}
         for col in df_grouped.columns:
@@ -188,28 +173,24 @@ def render_targets_ui(df_targets, key_prefix, show_charts=True, show_totals=Fals
                 
         first_col = df_grouped.columns[0]
         totals_dict[first_col] = "📌 TOTAL"
-        
         df_totals = pd.DataFrame([totals_dict])
         df_grouped = pd.concat([df_grouped, df_totals], ignore_index=True)
         num_rows = len(df_grouped) - 1
     else:
         num_rows = len(df_grouped)
         
-    # --- 🚀 NUEVO: CÁLCULO DE 'CPM ENVIADO' DESPUÉS DEL TOTAL ---
+    # CÁLCULO CPM ENVIADO (Pestaña 3)
     if calc_cpm_enviado:
-        # Buscamos columnas independientemente del nombre exacto
         col_rec = next((c for c in df_grouped.columns if 'received' in str(c).lower()), None)
         col_pay = next((c for c in df_grouped.columns if 'payout' in str(c).lower() or 'revenue' in str(c).lower()), None)
         
         if col_rec and col_pay:
-            # Forzamos numérico y calculamos
             pay_vals = pd.to_numeric(df_grouped[col_pay], errors='coerce').fillna(0)
             rec_vals = pd.to_numeric(df_grouped[col_rec], errors='coerce').replace(0, float('nan'))
-            
             df_grouped['CPM Enviado'] = (pay_vals / rec_vals) * 1000
             df_grouped['CPM Enviado'] = df_grouped['CPM Enviado'].fillna(0)
 
-    # --- RENDER DE TABLA (CON O SIN ESTILO DE TOTAL) ---
+    # RENDER DE TABLA
     if show_totals and geo_selected and os_selected:
         def style_total_row(row):
             if row.iloc[0] == "📌 TOTAL":
@@ -224,7 +205,7 @@ def render_targets_ui(df_targets, key_prefix, show_charts=True, show_totals=Fals
         st.dataframe(df_grouped, use_container_width=True, height=600, hide_index=True)
 
 
-# --- CARGA DEL DASHBOARD PRINCIPAL (AOS/IOS) ---
+# --- CARGA DEL DASHBOARD PRINCIPAL ---
 @st.cache_data(ttl=600)
 def load_data():
     urls = {'Android': get_url(GID_ANDROID), 'iOS': get_url(GID_IOS)}
@@ -264,12 +245,15 @@ def load_data():
             else:
                 continue
 
+            # BLINDAJE PARA DASHBOARD: Forzamos la limpieza numérica SIN IFs
             numeric_cols = ['Cost', 'Revenue', 'Received Visits ZP', 'Sold Visits ZP', '% Sold ZP', 'CPM ZP', 'CPM PC']
             for col in numeric_cols:
                 if col in df.columns:
-                    if df[col].dtype == 'object':
-                        df[col] = df[col].astype(str).str.replace('$', '', regex=False).str.replace(',', '', regex=False).str.replace('%', '', regex=False)
-                        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+                    df[col] = df[col].astype(str).str.replace('$', '', regex=False)\
+                                                 .str.replace('€', '', regex=False)\
+                                                 .str.replace(',', '', regex=False)\
+                                                 .str.replace('%', '', regex=False)
+                    df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
             
             if 'Cost' in df.columns and 'Revenue' in df.columns:
                 df['Gain'] = df['Revenue'] - df['Cost']
@@ -286,7 +270,7 @@ def load_data():
         return pd.concat(dfs, ignore_index=True).fillna(0)
     return None
 
-# --- CARGA DE LA PESTAÑA TARGETS DESDE GOOGLE SHEETS ---
+# --- CARGA TARGETS GOOGLE SHEETS ---
 @st.cache_data(ttl=600)
 def load_targets_data():
     url = get_url(GID_TARGETS)
@@ -298,11 +282,10 @@ def load_targets_data():
         st.error(f"Error cargando pestaña Zeropark: {e}")
         return None
 
-# --- CARGAR AMBAS BASES DE DATOS NATIVAS ---
+# --- INTERFAZ ---
 df_main = load_data()
 df_targets = load_targets_data()
 
-# --- INTERFAZ ---
 st.title("📊 Dashboard Financiero & Operativo")
 
 tab_principal, tab_targets, tab_csv = st.tabs([
@@ -316,7 +299,6 @@ tab_principal, tab_targets, tab_csv = st.tabs([
 # ==============================================================================
 with tab_principal:
     if df_main is not None and not df_main.empty:
-        
         st.sidebar.header("Filtros Globales (Dashboard Principal)")
         min_date = df_main['Date'].min()
         max_date = df_main['Date'].max()
@@ -417,7 +399,6 @@ with tab_targets:
     
     if df_targets is not None and not df_targets.empty:
         if 'Target' in df_targets.columns:
-            # Aquí NO calculamos el CPM Enviado. Se queda como estaba.
             render_targets_ui(df_targets, "zp", show_charts=True, show_totals=False, calc_cpm_enviado=False)
         else:
             cols_found = df_targets.attrs.get('original_cols', list(df_targets.columns))
@@ -427,7 +408,7 @@ with tab_targets:
         st.info("⏳ Cargando datos de Targets...")
 
 # ==============================================================================
-# 📁 PESTAÑA 3: ANÁLISIS DE CSV LOCAL (SOPORTA MÚLTIPLES ARCHIVOS)
+# 📁 PESTAÑA 3: ANÁLISIS DE CSV LOCAL
 # ==============================================================================
 with tab_csv:
     st.subheader("📁 Analiza tus propios CSV (Pestaña 3)")
@@ -458,10 +439,10 @@ with tab_csv:
                 
                 df_combined_csv = pd.concat(dfs_csv, ignore_index=True)
                 
-                # 1. MOSTRAMOS LA TABLA FILTRADA CON EL CPM ENVIADO ENCENDIDO
+                # 1. TABLA FILTRADA
                 render_targets_ui(df_combined_csv, "csv", show_charts=False, show_totals=True, calc_cpm_enviado=True)
                 
-                # 2. MOSTRAMOS EL RESUMEN GLOBAL 
+                # 2. RESUMEN GLOBAL 
                 st.divider()
                 st.subheader("🌐 Resumen Global Acumulado (Sin Filtros)")
                 st.write("Esta tabla muestra la suma de TODOS los archivos combinados, agrupado primero por **GEO** y después por **OS**.")
@@ -469,17 +450,14 @@ with tab_csv:
                 if 'GEO' in df_combined_csv.columns and 'OS' in df_combined_csv.columns:
                     num_cols = df_combined_csv.select_dtypes(include=['float64', 'int64']).columns.tolist()
                     
-                    # Agrupamos primero por GEO, luego por OS
                     df_global_summary = df_combined_csv.groupby(['GEO', 'OS'], dropna=False)[num_cols].sum().reset_index()
                     
-                    # --- CÁLCULO DE CPM ENVIADO PARA LA TABLA GLOBAL ---
                     col_rec_g = next((c for c in df_global_summary.columns if 'received' in str(c).lower()), None)
                     col_pay_g = next((c for c in df_global_summary.columns if 'payout' in str(c).lower() or 'revenue' in str(c).lower()), None)
                     
                     if col_rec_g and col_pay_g:
                         pay_vals_g = pd.to_numeric(df_global_summary[col_pay_g], errors='coerce').fillna(0)
                         rec_vals_g = pd.to_numeric(df_global_summary[col_rec_g], errors='coerce').replace(0, float('nan'))
-                        
                         df_global_summary['CPM Enviado'] = (pay_vals_g / rec_vals_g) * 1000
                         df_global_summary['CPM Enviado'] = df_global_summary['CPM Enviado'].fillna(0)
                         
